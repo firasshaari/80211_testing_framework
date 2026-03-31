@@ -36,6 +36,9 @@ allure-report/
 config/testbed.yaml
 config/profiles/*.yaml
 !config/profiles/example_*.yaml
+
+# AP JSON config files are provided by the user and intentionally tracked.
+# configs/ap/**/*.json is NOT ignored.
 *.pem
 *.key
 *.crt

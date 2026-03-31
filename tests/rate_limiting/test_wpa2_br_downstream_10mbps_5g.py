@@ -53,6 +53,8 @@ def test_wpa2_br_downstream_10mbps_5g(ap, traffic_engine):
                 "UPSTREAM_RATE_KBPS":   0,
             },
         )
+        # ^^^ Place your AP config JSON file at configs/ap/rate_limiting/wpa2_bridge_5g.json
+        # Use ${VAR_NAME} placeholders in the JSON for values that vary per test.
         attach_ap_config(config)
         ap.push_config(config)
 

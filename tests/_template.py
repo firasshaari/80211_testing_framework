@@ -59,10 +59,13 @@ def test_template(ap, traffic_engine):
     password = "testpass123"
 
     with step("Build and push AP config"):
-        # Load from a JSON template file and substitute variables.
-        # Templates live in configs/ap/<category>/<name>.json
+        # Load your AP config JSON file and substitute ${VAR} placeholders.
+        # Place JSON files under configs/ap/<category>/<name>.json.
+        # String vars keep their JSON quotes; int/float/bool vars replace
+        # the surrounding quotes so JSON types are preserved:
+        #   "egress-rate": "${RATE_KBPS}"  +  RATE_KBPS=10000  →  "egress-rate": 10000
         config = load_ap_config(
-            "configs/ap/connectivity/wpa2_bridge_5g.json",  # change to the right template
+            "configs/ap/<category>/<your_config>.json",
             vars={"SSID": ssid, "PASSWORD": password},
         )
         attach_ap_config(config)
