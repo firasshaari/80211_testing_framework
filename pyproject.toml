@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "80211-testing-framework"
+version = "0.1.0"
+description = "Capability-aware WiFi test framework for OpenWiFi APs"
+requires-python = ">=3.10"
+dependencies = [
+    # Test runner + reporting
+    "pytest>=8.0",
+    "allure-pytest>=2.13",
+
+    # HTTP clients
+    "requests>=2.31",
+    "urllib3>=2.0",
+
+    # SSH / serial
+    "paramiko>=3.4",
+
+    # Config validation
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+
+    # Utilities
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest-xdist",       # parallel test execution
+    "pytest-timeout",     # per-test timeout
+    "black",              # formatter
+    "ruff",               # linter
+    "mypy",               # type checker
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["framework*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true

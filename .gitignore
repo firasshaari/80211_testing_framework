@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# pytest / test output
+.pytest_cache/
+.cache/
+test_everything.xml
+
+# Allure
+allure-results/
+allure-report/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets / credentials — never commit these
+config/testbed.yaml
+config/profiles/*.yaml
+*.pem
+*.key
+*.crt
+secrets.env
+.env
+
+# Logs
+*.log
