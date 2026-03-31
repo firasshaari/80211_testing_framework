@@ -11,8 +11,8 @@ Run individually:
 import pytest
 import allure
 
-from framework.markers              import requires_two_endpoints
-from framework.ap.config_builder    import ConfigBuilder
+from framework.markers                 import requires_two_endpoints
+from framework.ap.config_loader        import load_ap_config
 from framework.reporting.allure_helper import (
     attach_ap_config,
     attach_traffic_result,
@@ -44,18 +44,14 @@ def test_wpa2_br_downstream_10mbps_5g(ap, traffic_engine):
     """
 
     with step("Build and push AP config with 10 Mbps downstream rate limit"):
-        config = (
-            ConfigBuilder()
-            .mode("BRIDGE")
-            .radio("5G", channel="auto", channel_mode="HE", channel_width=80)
-            .ssid(
-                name=SSID,
-                band="5G",
-                security="psk2",
-                password=PASSWORD,
-                downstream_rate_kbps=int(LIMIT_MBPS * 1000),
-            )
-            .build()
+        config = load_ap_config(
+            "configs/ap/rate_limiting/wpa2_bridge_5g.json",
+            vars={
+                "SSID":                 SSID,
+                "PASSWORD":             PASSWORD,
+                "DOWNSTREAM_RATE_KBPS": int(LIMIT_MBPS * 1000),
+                "UPSTREAM_RATE_KBPS":   0,
+            },
         )
         attach_ap_config(config)
         ap.push_config(config)

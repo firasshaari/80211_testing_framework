@@ -19,8 +19,9 @@ import pytest
 import allure
 
 # Framework imports — use these, don't import pytest fixtures directly
-from framework.markers              import requires_two_endpoints  # change as needed
-from framework.ap.config_builder    import ConfigBuilder
+from framework.markers                 import requires_two_endpoints  # change as needed
+from framework.ap.config_loader        import load_ap_config  # preferred: load from JSON template
+# from framework.ap.config_builder    import ConfigBuilder    # alternative: build programmatically
 from framework.reporting.allure_helper import (
     attach_ap_config,
     attach_traffic_result,
@@ -58,12 +59,11 @@ def test_template(ap, traffic_engine):
     password = "testpass123"
 
     with step("Build and push AP config"):
-        config = (
-            ConfigBuilder()
-            .mode("BRIDGE")
-            .radio("5G", channel="auto", channel_mode="HE", channel_width=80)
-            .ssid(name=ssid, band="5G", security="psk2", password=password)
-            .build()
+        # Load from a JSON template file and substitute variables.
+        # Templates live in configs/ap/<category>/<name>.json
+        config = load_ap_config(
+            "configs/ap/connectivity/wpa2_bridge_5g.json",  # change to the right template
+            vars={"SSID": ssid, "PASSWORD": password},
         )
         attach_ap_config(config)
         ap.push_config(config)
