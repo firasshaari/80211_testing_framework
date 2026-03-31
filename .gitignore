@@ -35,6 +35,7 @@ allure-report/
 # Secrets / credentials — never commit these
 config/testbed.yaml
 config/profiles/*.yaml
+!config/profiles/example_*.yaml
 *.pem
 *.key
 *.crt

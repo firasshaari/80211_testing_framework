@@ -1,5 +1,17 @@
 """
 Pydantic models for testbed.yaml — validated at session start.
+
+Network resources can be declared in two ways:
+
+1. **Managed** (``infra:`` block present): the framework SSH-es into the
+   infra box and creates/tears down VLANs, DHCP pools, RADIUS entries, etc.
+
+2. **Pre-configured** (``network:`` block present): resources already exist
+   on the network; the framework just reads their parameters and uses them.
+   The ``infra:`` block is not required in this mode.
+
+Both blocks may coexist — the framework merges them, with ``infra:`` used for
+dynamic management and ``network:`` for static lookups.
 """
 from __future__ import annotations
 import os
@@ -70,12 +82,76 @@ class InfraConfig(BaseModel):
     services: InfraServices = InfraServices()
 
 
+# ── Pre-configured network resources ──────────────────────────────────────────
+
+class VLANEntry(BaseModel):
+    """Describes a VLAN that already exists on the network."""
+    id: int                                  # 802.1Q tag
+    name: str = ""                           # human label, e.g. "corp", "guest"
+    subnet: str                              # CIDR, e.g. "192.168.10.0/24"
+    gateway: str                             # default gateway IP
+    dhcp_range: Optional[list[str]] = None  # [start, end] — purely informational
+    dns: str = "8.8.8.8"
+    interface: Optional[str] = None          # e.g. "eth0.10" on the infra/router box
+
+
+class StaticRadiusServer(BaseModel):
+    """Describes a RADIUS server that is already running and reachable."""
+    host: str
+    auth_port: int = 1812
+    acct_port: int = 1813
+    secret: str
+
+    @field_validator("secret", mode="before")
+    @classmethod
+    def expand_secret(cls, v):
+        return _expand_env(str(v))
+
+
+class NetworkConfig(BaseModel):
+    """
+    Pre-configured network resources available to tests.
+
+    When this section is present, tests can call
+    ``testbed_config.network.get_vlan(id=10)`` (or iterate
+    ``network.vlans``) instead of asking the framework to create VLANs
+    dynamically.
+    """
+    vlans: list[VLANEntry] = []
+    radius: Optional[StaticRadiusServer] = None
+    management_subnet: Optional[str] = None   # subnet where AP mgmt lives
+
+    # ── Convenience helpers ───────────────────────────────────────────────────
+
+    def get_vlan(self, *, id: int | None = None, name: str | None = None) -> VLANEntry:
+        """
+        Look up a VLAN by tag ID or name.
+
+        Raises ValueError if no match is found.
+        """
+        for v in self.vlans:
+            if id is not None and v.id == id:
+                return v
+            if name is not None and v.name == name:
+                return v
+        criteria = f"id={id}" if id is not None else f"name={name!r}"
+        raise ValueError(f"No pre-configured VLAN with {criteria}")
+
+    def get_vlans_by_name(self, *names: str) -> list[VLANEntry]:
+        """Return VLANs whose name is in *names*, preserving declaration order."""
+        return [v for v in self.vlans if v.name in names]
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
 class Settings(BaseModel):
     association_timeout: int  = 30
     traffic_duration_s: int   = 30
     allure_results_dir: str   = "allure-results"
     log_level: str            = "INFO"
 
+
+# ── Root config ───────────────────────────────────────────────────────────────
 
 class TestbedConfig(BaseModel):
     testbed:    TestbedMeta
@@ -84,6 +160,7 @@ class TestbedConfig(BaseModel):
     lanforge:   Optional[LANforgeConfig] = None
     rpi5:       Optional[RPi5Config]     = None
     infra:      Optional[InfraConfig]    = None
+    network:    Optional[NetworkConfig]  = None   # pre-configured resources
     settings:   Settings                 = Settings()
 
 

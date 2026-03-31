@@ -79,11 +79,11 @@ def pytest_runtest_setup(item):
                 skip_if(not caps.has_sixghz_radio,
                         "No 6 GHz capable radio in testbed")
             case "requires_radius":
-                skip_if(not caps.has_radius,
-                        "FreeRADIUS not available on infra box")
+                skip_if(not caps.radius_available,
+                        "RADIUS not available (neither managed infra nor static network.radius configured)")
             case "requires_vlan":
-                skip_if(not caps.has_vlan_infra,
-                        "VLAN infra not configured in testbed")
+                skip_if(not caps.vlans_available,
+                        "VLANs not available (neither managed infra nor static network.vlans configured)")
             case "requires_min_stations":
                 n = marker.args[0] if marker.args else 1
                 skip_if(caps.total_sta_capacity < n,

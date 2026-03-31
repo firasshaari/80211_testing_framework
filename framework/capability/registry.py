@@ -24,16 +24,21 @@ class CapabilityRegistry:
         caps.has_infra    = self._probe_infra()
 
         if caps.has_infra:
-            caps.has_radius    = self._check_service("freeradius")
+            caps.has_radius     = self._check_service("freeradius")
             caps.has_vlan_infra = True
 
-        # Recompute derived fields after setting radios
+        # Populate pre-configured (static) network resources
+        self._load_static_network(caps)
+
+        # Recompute derived fields after all sources are populated
         caps.__post_init__()
 
         log.info(
             f"Capabilities probed — engine={caps.best_engine} "
             f"radios={len(caps.radios)} total_sta={caps.total_sta_capacity} "
-            f"radius={caps.has_radius} vlan={caps.has_vlan_infra}"
+            f"radius_available={caps.radius_available} vlans_available={caps.vlans_available} "
+            f"(managed radius={caps.has_radius} vlan={caps.has_vlan_infra} | "
+            f"static vlans={len(caps.vlans)} radius={caps.static_radius is not None})"
         )
         return caps
 
@@ -102,6 +107,22 @@ class CapabilityRegistry:
         except Exception as e:
             log.warning(f"Infra probe failed: {e}")
             return False
+
+    def _load_static_network(self, caps: TestbedCapabilities) -> None:
+        """
+        Copy VLANs and RADIUS server info from the ``network:`` config block
+        into *caps*.  Does nothing if the block is absent.
+        """
+        net = getattr(self._config, "network", None)
+        if net is None:
+            return
+        if net.vlans:
+            caps.vlans = list(net.vlans)
+            log.info(f"Static network: {len(caps.vlans)} pre-configured VLANs loaded "
+                     f"({[v.id for v in caps.vlans]})")
+        if net.radius:
+            caps.static_radius = net.radius
+            log.info(f"Static network: RADIUS server at {net.radius.host}:{net.radius.auth_port}")
 
     def _check_service(self, service: str) -> bool:
         """Return True if a systemd service is active on the infra box."""
