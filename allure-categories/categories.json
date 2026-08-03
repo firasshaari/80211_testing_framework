@@ -1,0 +1,37 @@
+[
+  {
+    "name": "AP rejected the config",
+    "messageRegex": ".*(Value must be|\\[E\\]|Rejecting config due to strict|Fatal error).*",
+    "matchedStatuses": ["failed", "broken"]
+  },
+  {
+    "name": "Client could not connect",
+    "messageRegex": ".*(Did not associate|no DHCP lease|wpa_state=SCANNING).*",
+    "matchedStatuses": ["failed"]
+  },
+  {
+    "name": "Client connected but no traffic",
+    "messageRegex": ".*(cannot reach|no internet|replies).*",
+    "matchedStatuses": ["failed"]
+  },
+  {
+    "name": "SSID did not come up",
+    "messageRegex": ".*(not broadcasting|did not come up).*",
+    "matchedStatuses": ["failed"]
+  },
+  {
+    "name": "Harness lost the AP (not an AP fault)",
+    "messageRegex": ".*(in connect|Cannot SSH|not reachable over SSH|transport failed|Host is down|PipeTimeout|Socket is closed|EOFError).*",
+    "matchedStatuses": ["failed", "broken"]
+  },
+  {
+    "name": "Apply returned nothing (intermittent harness bug)",
+    "messageRegex": ".*no UCI batch in ucentral\\.uc output.*",
+    "matchedStatuses": ["failed", "broken"]
+  },
+  {
+    "name": "Testbed lacks the hardware",
+    "messageRegex": ".*(testbed lacks|not usable here|unusable here).*",
+    "matchedStatuses": ["skipped"]
+  }
+]

@@ -1,0 +1,14 @@
+# FreeRADIUS for the regression bench.
+#
+# Built locally rather than pulled: the upstream freeradius/freeradius-server
+# images are amd64-only and fail with "Exec format error" on the RPi5, so we
+# build the same thing natively for arm64 from the distro package.
+FROM docker.io/library/debian:trixie-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends freeradius freeradius-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+EXPOSE 1812/udp 1813/udp
+# -f foreground, -l stdout so podman captures the log.
+CMD ["freeradius", "-f", "-l", "stdout"]

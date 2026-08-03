@@ -1,0 +1,48 @@
+# Minimal bench: one OpenWiFi AP and one RPi5 + BE200.
+#
+# Copy to config/testbed.yaml and edit. That path is gitignored, so credentials
+# stay out of the repository. Any value may also be written as ${ENV_VAR}.
+#
+# With only these two blocks the framework runs every example that needs
+# nothing more than an AP and a single station — roughly two thirds of the
+# catalog. Everything else skips with a reason naming what is missing.
+
+testbed:
+  name: bench-minimal
+  description: Single AP, single RPi5 station
+  operator: ""
+
+ap:
+  host: 192.168.1.1
+  user: root
+  password: openwifi
+  # The agent is stopped and disabled for the run so nothing reverts a config
+  # mid-test, then restored afterwards.
+  disable_ucentral_agent: true
+  restore_agent_after_run: true
+
+station:
+  host: 192.168.1.50
+  user: pi
+  password: ${RPI5_PASSWORD}
+  # Defaults to the login password when omitted.
+  root_password: ${RPI5_ROOT_PASSWORD}
+  # wlan0 is the Pi's onboard radio — the BE200 normally comes up as wlan1.
+  iface: wlan1
+  country: US
+
+normalization:
+  # Upstream examples ship with country CA, 80 MHz on 2.4 GHz radios, and
+  # channels that do not exist in their declared band. These settings clean
+  # that up; every change is listed in the report.
+  country: US
+  avoid_dfs: true
+  force_2g_width: 20
+  # Makes the renderer reject rather than silently clamp an unsupported
+  # request. Turn this off only if you want upstream's clamping behaviour.
+  strict_apply: true
+
+settings:
+  association_timeout: 45
+  apply_timeout: 180
+  report_dir: reports

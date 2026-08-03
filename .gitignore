@@ -25,6 +25,9 @@ test_everything.xml
 allure-results/
 allure-report/
 
+# Standalone HTML regression reports — run artifacts, not source
+reports/
+
 # IDE
 .vscode/
 .idea/
@@ -47,3 +50,10 @@ secrets.env
 
 # Logs
 *.log
+
+# Lab-specific service addresses and secrets
+infra/infra.env
+
+# Generated Allure artefacts (results are produced by a run, reports by the CLI)
+allure-results*/
+allure-report*/

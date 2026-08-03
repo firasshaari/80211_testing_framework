@@ -1,169 +1,213 @@
 """
-Pydantic models for testbed.yaml — validated at session start.
+Pydantic models for ``testbed.yaml`` — validated at session start.
 
-Network resources can be declared in two ways:
+The minimum viable testbed is two boxes: the AP under test and one RPi5
+station. Everything under ``external:`` describes lab resources that only some
+examples need; leaving a block out makes the tests requiring it skip with a
+readable reason rather than fail.
 
-1. **Managed** (``infra:`` block present): the framework SSH-es into the
-   infra box and creates/tears down VLANs, DHCP pools, RADIUS entries, etc.
-
-2. **Pre-configured** (``network:`` block present): resources already exist
-   on the network; the framework just reads their parameters and uses them.
-   The ``infra:`` block is not required in this mode.
-
-Both blocks may coexist — the framework merges them, with ``infra:`` used for
-dynamic management and ``network:`` for static lookups.
+``${ENV_VAR}`` is expanded in string fields so credentials can stay out of the
+file.
 """
 from __future__ import annotations
+
 import os
 import re
 from pathlib import Path
 from typing import Optional
+
 import yaml
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 def _expand_env(value: str) -> str:
-    """Expand ${ENV_VAR} placeholders in string values."""
-    return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+    return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), str(value))
+
+
+class _EnvExpanding(BaseModel):
+    """Base that expands ${ENV} references in every string field."""
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _expand(cls, v):
+        return _expand_env(v) if isinstance(v, str) else v
 
 
 class TestbedMeta(BaseModel):
-    name: str
+    name: str = "openwifi-regression"
     description: str = ""
+    operator: str = ""
 
 
-class APConfig(BaseModel):
-    serial: str
-    serial_port: Optional[str] = None
+class APSettings(_EnvExpanding):
+    """The device under test."""
 
+    host: str
+    user: str = "root"
+    password: str = "openwifi"
+    port: int = 22
+    key_path: Optional[str] = None
+    # Leave the agent running only when deliberately testing cloud-managed mode.
+    disable_ucentral_agent: bool = True
+    # How to hand the AP back when the session ends:
+    #   factory_reset  jffs2reset -y && reboot — clean baseline, re-onboards
+    #                  to the controller by itself (default, recommended)
+    #   restore_agent  re-enable the uCentral agent, leaving the last applied
+    #                  config committed in /etc/config
+    #   none           leave the AP exactly as the tests left it
+    cleanup: str = "factory_reset"
 
-class ControllerConfig(BaseModel):
-    base_url: str
-    username: str
-    password: str
-    verify_ssl: bool = False
-
-    @field_validator("password", mode="before")
+    @field_validator("cleanup")
     @classmethod
-    def expand_password(cls, v):
-        return _expand_env(str(v))
+    def known_cleanup(cls, v):
+        allowed = {"factory_reset", "restore_agent", "none"}
+        if v not in allowed:
+            raise ValueError(f"ap.cleanup must be one of {sorted(allowed)}, got {v!r}")
+        return v
 
 
-class LANforgeConfig(BaseModel):
+class StationSettings(_EnvExpanding):
+    """The RPi5 + BE200 acting as the client."""
+
     host: str
-    port: int = 8080
-    radio_overrides: Optional[dict[str, str]] = None
+    user: str = "pi"
+    password: str
+    root_password: Optional[str] = None
+    # wlan0 is the Pi's onboard radio; the BE200 normally lands on wlan1.
+    iface: str = "wlan1"
+    country: str = "US"
+    port: int = 22
+
+    @field_validator("root_password")
+    @classmethod
+    def default_root_to_login_password(cls, v, info):
+        return v or info.data.get("password")
 
 
-class RPi5Host(BaseModel):
+class RadiusSettings(_EnvExpanding):
     host: str
-    user: str
-    key_path: str
-    role: str          # "client" | "server"
-    wifi_iface: str = "wlan0"
-
-
-class RPi5Config(BaseModel):
-    hosts: list[RPi5Host]
-
-
-class InfraServices(BaseModel):
-    dhcp: str = "dnsmasq"
-    radius: str = "freeradius"
-
-
-class InfraConfig(BaseModel):
-    host: str
-    user: str
-    key_path: str
-    parent_iface: str = "eth0"
-    dnsmasq_conf_dir: str = "/etc/dnsmasq.d"
-    freeradius_conf_dir: str = "/etc/freeradius/3.0"
-    services: InfraServices = InfraServices()
-
-
-# ── Pre-configured network resources ──────────────────────────────────────────
-
-class VLANEntry(BaseModel):
-    """Describes a VLAN that already exists on the network."""
-    id: int                                  # 802.1Q tag
-    name: str = ""                           # human label, e.g. "corp", "guest"
-    subnet: str                              # CIDR, e.g. "192.168.10.0/24"
-    gateway: str                             # default gateway IP
-    dhcp_range: Optional[list[str]] = None  # [start, end] — purely informational
-    dns: str = "8.8.8.8"
-    interface: Optional[str] = None          # e.g. "eth0.10" on the infra/router box
-
-
-class StaticRadiusServer(BaseModel):
-    """Describes a RADIUS server that is already running and reachable."""
-    host: str
+    secret: str
     auth_port: int = 1812
     acct_port: int = 1813
-    secret: str
+    # A known-good account the station can authenticate with.
+    identity: str = "testuser"
+    password: str = "testpass"
+    eap_method: str = "PEAP"
+    # VLAN this server is configured to return for `identity` via
+    # Tunnel-Private-Group-Id. Required to test dynamic VLAN assignment: without
+    # it there is no way to know which VLAN a successful auth should land in,
+    # so that test skips rather than asserting nothing.
+    dynamic_vlan: Optional[int] = None
 
-    @field_validator("secret", mode="before")
-    @classmethod
-    def expand_secret(cls, v):
-        return _expand_env(str(v))
+
+class LocalRadiusUser(_EnvExpanding):
+    """One account served by the AP's own EAP server (the eap_local example)."""
+
+    username: str
+    password: str
+    # VLAN the AP should assign this user. The upstream eap_local example
+    # carries no VLAN at all, so dynamic assignment cannot be tested unless
+    # this is supplied.
+    vlan_id: Optional[int] = None
 
 
-class NetworkConfig(BaseModel):
+class VLANSettings(BaseModel):
+    """VLANs the upstream switch already trunks to the AP."""
+
+    ids: list[int] = Field(default_factory=list)
+    # Optional per-VLAN gateway, used as a ping target to prove segmentation.
+    gateways: dict[int, str] = Field(default_factory=dict)
+
+
+class ExternalResources(BaseModel):
     """
-    Pre-configured network resources available to tests.
-
-    When this section is present, tests can call
-    ``testbed_config.network.get_vlan(id=10)`` (or iterate
-    ``network.vlans``) instead of asking the framework to create VLANs
-    dynamically.
+    Optional lab resources. Each present block satisfies one requirement in
+    :mod:`framework.examples.catalog`; absent blocks turn into test skips.
     """
-    vlans: list[VLANEntry] = []
-    radius: Optional[StaticRadiusServer] = None
-    management_subnet: Optional[str] = None   # subnet where AP mgmt lives
 
-    # ── Convenience helpers ───────────────────────────────────────────────────
-
-    def get_vlan(self, *, id: int | None = None, name: str | None = None) -> VLANEntry:
-        """
-        Look up a VLAN by tag ID or name.
-
-        Raises ValueError if no match is found.
-        """
-        for v in self.vlans:
-            if id is not None and v.id == id:
-                return v
-            if name is not None and v.name == name:
-                return v
-        criteria = f"id={id}" if id is not None else f"name={name!r}"
-        raise ValueError(f"No pre-configured VLAN with {criteria}")
-
-    def get_vlans_by_name(self, *names: str) -> list[VLANEntry]:
-        """Return VLANs whose name is in *names*, preserving declaration order."""
-        return [v for v in self.vlans if v.name in names]
+    radius: Optional[RadiusSettings] = None
+    # Accounts to inject into the AP's own EAP server for local-RADIUS tests.
+    local_radius_users: list[LocalRadiusUser] = Field(default_factory=list)
+    vlan: Optional[VLANSettings] = None
+    # Host running `iperf3 -s`, reachable from the station's subnet.
+    iperf_server: Optional[str] = None
+    # Second AP or tunnel endpoint for mesh/WDS/GRE/VXLAN examples.
+    peer_ap_host: Optional[str] = None
+    dhcp_server: Optional[str] = None
+    captive_backend: Optional[str] = None
+    # Hardware the DUT itself may or may not have.
+    has_switch_hw: bool = False
+    has_gps_hw: bool = False
+    has_wwan_hw: bool = False
+    # Set false on an air-gapped bench so NTP/online-check/AFC tests skip.
+    has_internet: bool = True
 
 
-# ── Settings ──────────────────────────────────────────────────────────────────
+class NormalizationSettings(BaseModel):
+    """
+    How upstream examples are cleaned before they reach the AP.
+
+    Defaults target a US bench that wants deterministic results — see
+    :mod:`framework.examples.normalize` for why each one matters.
+    """
+
+    country: str = "US"
+    avoid_dfs: bool = True
+    force_2g_width: Optional[int] = 20
+    # Fixed channel per band for the whole sweep, so a result on a given band
+    # means the same thing every run. All are non-DFS; 6 GHz 37 is a PSC.
+    channel_plan: dict[str, int] = Field(
+        default_factory=lambda: {"2G": 1, "5G": 36, "6G": 37}
+    )
+    # Adds "strict": true so the renderer rejects instead of silently clamping.
+    strict_apply: bool = True
+    # Move bridged SSIDs onto the first VLAN in external.vlan.ids instead of
+    # leaving them on the untagged upstream. Keeps test clients off the
+    # management subnet — a bridged SSID sharing that subnet is what previously
+    # locked the framework out of its own station. Needs external.vlan.ids.
+    bridge_vlan_from_pool: bool = True
+    # SSH idle timeout forced into every applied config, in seconds. 0 disables
+    # the timeout (schema default is 60, maximum 600). Set to null to omit the
+    # field. 'ssh' is always added to the upstream interface regardless — that
+    # is what keeps the AP reachable mid-run.
+    ssh_idle_timeout: Optional[int] = 0
+
 
 class Settings(BaseModel):
-    association_timeout: int  = 30
-    traffic_duration_s: int   = 30
-    allure_results_dir: str   = "allure-results"
-    log_level: str            = "INFO"
+    association_timeout: int = 45
+    apply_timeout: int = 180
+    # Commit-confirmed safety net. Before each apply the AP is told to
+    # factory-reset itself after this many seconds unless the framework
+    # cancels it, which it does as soon as management access is proven still
+    # alive. Protects against a config that cuts the AP off the network. Must
+    # comfortably exceed apply_timeout.
+    rollback_seconds: int = 300
+    wireless_settle_timeout: int = 90
+    traffic_duration_s: int = 10
+    ping_count: int = 10
+    report_dir: str = "reports"
+    allure_results_dir: str = "allure-results"
+    log_level: str = "INFO"
+    # Passphrase used for SSIDs the framework substitutes a known key into.
+    default_passphrase: str = "12345678"
 
-
-# ── Root config ───────────────────────────────────────────────────────────────
 
 class TestbedConfig(BaseModel):
-    testbed:    TestbedMeta
-    ap:         APConfig
-    controller: ControllerConfig
-    lanforge:   Optional[LANforgeConfig] = None
-    rpi5:       Optional[RPi5Config]     = None
-    infra:      Optional[InfraConfig]    = None
-    network:    Optional[NetworkConfig]  = None   # pre-configured resources
-    settings:   Settings                 = Settings()
+    testbed: TestbedMeta = TestbedMeta()
+    ap: APSettings
+    station: StationSettings
+    external: ExternalResources = ExternalResources()
+    normalization: NormalizationSettings = NormalizationSettings()
+    settings: Settings = Settings()
 
 
-def load_testbed_config(path: str) -> TestbedConfig:
-    data = yaml.safe_load(Path(path).read_text())
+def load_testbed_config(path: str | Path) -> TestbedConfig:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Testbed config not found: {p}\n"
+            f"Copy config/profiles/example_minimal.yaml to config/testbed.yaml "
+            f"and fill in your AP and RPi5 details."
+        )
+    data = yaml.safe_load(p.read_text()) or {}
     return TestbedConfig(**data)

@@ -1,96 +1,78 @@
 """
 TEST SCRIPT TEMPLATE — copy this file to create a new test.
 
-Naming convention: test_{security}_{mode}_{metric}_{band}.py
-Example:          test_wpa3_bridge_downstream_10mbps_5g.py
+Most coverage does NOT need a new file. The regression sweep is driven by
+``framework/examples/catalog.py``, so adding an upstream example to the catalog
+gives you apply, SSID-bring-up and (where relevant) association coverage for
+free. Write a file like this one only when an example needs a *bespoke
+assertion* — something beyond "it applied and a client could associate".
 
 Steps:
-  1. Copy this file into the appropriate tests/ subdirectory
-  2. Update the module docstring
-  3. Update the allure metadata (epic, feature, story, title, severity)
-  4. Update the capability markers (@requires_*)
-  5. Update pytest markers (@pytest.mark.*)
-  6. Write the test body — use `with step(...)` blocks for allure steps
-  7. Run: pytest tests/<subdir>/test_your_new_test.py -v -s
+  1. Copy into tests/regression/ as test_<feature>.py
+  2. Pick the right area marker (must exist in pytest.ini)
+  3. Use the `apply_example` fixture — it normalizes, applies and fails with the
+     renderer's own error text if the AP rejects the config
+  4. Derive SSIDs from the config you applied rather than hardcoding names
+  5. Run: pytest tests/regression/test_your_test.py -v --testbed-config config/testbed.yaml
 
-DO NOT modify conftest.py, framework/, or pytest.ini.
+DO NOT modify conftest.py, framework/ or pytest.ini.
 """
-import pytest
-import allure
+from __future__ import annotations
 
-# Framework imports — use these, don't import pytest fixtures directly
-from framework.markers                 import requires_two_endpoints  # change as needed
-from framework.ap.config_loader        import load_ap_config  # preferred: load from JSON template
-# from framework.ap.config_builder    import ConfigBuilder    # alternative: build programmatically
+import allure
+import pytest
+
+from framework.examples.inspect import station_ready_ssids
 from framework.reporting.allure_helper import (
-    attach_ap_config,
-    attach_traffic_result,
-    attach_ssid_scan,
-    attach_ucentral_status,
+    attach_ap_log,
+    attach_association,
     step,
 )
 
-# ── Allure Metadata ────────────────────────────────────────────────────────────
-@allure.epic("Category")           # e.g. "Rate Limiting", "Connectivity", "Capacity"
-@allure.feature("Sub-feature")     # e.g. "Per-SSID Rate Limiting"
-@allure.story("Security mode")     # e.g. "WPA2 Personal - Bridge Mode"
-@allure.title("Short test title")
+
+@allure.epic("Feature area")
+@allure.feature("Specific behaviour")
+@allure.title("What this proves")
 @allure.severity(allure.severity_level.NORMAL)
-
-# ── Capability Requirement ─────────────────────────────────────────────────────
-@requires_two_endpoints            # replace with appropriate marker(s)
-
-# ── pytest Markers ─────────────────────────────────────────────────────────────
-@pytest.mark.connectivity          # replace with appropriate category marker
-@pytest.mark.wpa2_personal
-@pytest.mark.bridge
-@pytest.mark.fiveg
-
-# ── Test Function ──────────────────────────────────────────────────────────────
-def test_template(ap, traffic_engine):
+@pytest.mark.security          # an area marker from pytest.ini
+@pytest.mark.regression        # include in the standard sweep
+def test_template(apply_example, station, ap, capabilities, testbed_config):
     """
-    Describe what this test verifies in one sentence.
+    One sentence on what this verifies.
 
-    Steps:
-      1. ...
-      2. ...
+    Hardware requirements are NOT declared here — they come from the catalog
+    entry for the example, and the framework skips with a reason naming what is
+    missing.
     """
-    ssid     = "test-ssid"
-    password = "testpass123"
+    with step("Apply the example config"):
+        # Raises/fails with the renderer's error detail when the AP rejects it.
+        example, config = apply_example("crypto-psk")
 
-    with step("Build and push AP config"):
-        # Load your AP config JSON file and substitute ${VAR} placeholders.
-        # Place JSON files under configs/ap/<category>/<name>.json.
-        # String vars keep their JSON quotes; int/float/bool vars replace
-        # the surrounding quotes so JSON types are preserved:
-        #   "egress-rate": "${RATE_KBPS}"  +  RATE_KBPS=10000  →  "egress-rate": 10000
-        config = load_ap_config(
-            "configs/ap/<category>/<your_config>.json",
-            vars={"SSID": ssid, "PASSWORD": password},
-        )
-        attach_ap_config(config)
-        ap.push_config(config)
+    with step("Pick an SSID this bench can actually reach"):
+        targets = station_ready_ssids(config, bands=capabilities.usable_bands)
+        if not targets:
+            pytest.skip("No station-ready SSID on a usable band")
+        ssid = targets[0]
 
-    with step("Verify AP connected to controller"):
-        status = ap.wait_for_state("connected", timeout=30)
-        attach_ucentral_status(status)
+    try:
+        with step(f"Associate to {ssid.name}"):
+            assoc = station.connect(
+                ssid.name,
+                ssid.proto,
+                passphrase=ssid.key or testbed_config.settings.default_passphrase,
+                timeout=testbed_config.settings.association_timeout,
+            )
+            attach_association(assoc)
+            assert assoc.has_ip, f"Associated to {ssid.name} but got no DHCP lease"
 
-    with step("Connect client"):
-        handle = traffic_engine.connect_client(
-            ssid=ssid, password=password, band="5G", security="wpa2",
-        )
-        assert handle.ip is not None, "Client did not get an IP address"
-
-    with step("Verify SSID in scan"):
-        ssids = traffic_engine.scan_ssids()
-        attach_ssid_scan(ssids)
-        assert ssid in [s.ssid for s in ssids], \
-            f"SSID '{ssid}' not visible. Seen: {[s.ssid for s in ssids]}"
-
-    with step("Run traffic and assert"):
-        result = traffic_engine.run_traffic(
-            handle=handle, direction="downstream",
-            protocol="udp", duration_s=10, target_rate_mbps=100.0,
-        )
-        attach_traffic_result(result)
-        assert result.rx_throughput_mbps > 0, "No traffic received"
+        with step("Assert the behaviour this test exists for"):
+            # Replace with the real assertion. Say what went wrong and with
+            # which values — the message lands in the HTML report verbatim.
+            clients = ap.associated_clients()
+            assert any(c["mac"] == assoc.mac.lower() for c in clients), (
+                f"Station {assoc.mac} has an IP but the AP does not list it as "
+                f"associated. AP sees: {[c['mac'] for c in clients]}"
+            )
+    finally:
+        attach_ap_log(ap.logread(200))
+        station.disconnect()

@@ -40,6 +40,7 @@ Relative paths are resolved first against the current working directory
 (where pytest is launched), then against the project root.
 """
 from __future__ import annotations
+
 import json
 import logging
 import re

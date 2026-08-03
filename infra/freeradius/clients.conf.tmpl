@@ -1,0 +1,14 @@
+# NAS clients allowed to talk to this RADIUS server.
+# The AP under test, plus the lab subnet so a re-addressed AP still works.
+client ap-under-test {
+    ipaddr = 10.0.127.220
+    secret = @SECRET@
+    require_message_authenticator = no
+    nas_type = other
+}
+
+client lab {
+    ipaddr = 10.0.0.0/16
+    secret = @SECRET@
+    require_message_authenticator = no
+}

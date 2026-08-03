@@ -1,0 +1,21 @@
+# Test accounts for the regression suite.
+#
+# testuser authenticates and is assigned VLAN 1000 via Tunnel-Private-Group-Id,
+# which is what makes dynamic VLAN assignment testable: without a server that
+# returns a known VLAN there is no way to tell a correct assignment from none.
+testuser Cleartext-Password := "testpass"
+        Tunnel-Type = VLAN,
+        Tunnel-Medium-Type = IEEE-802,
+        Tunnel-Private-Group-Id = "1000"
+
+# Second account on the other lab VLAN, to prove the assignment actually varies
+# rather than everything landing in one place.
+vlan2000 Cleartext-Password := "testpass"
+        Tunnel-Type = VLAN,
+        Tunnel-Medium-Type = IEEE-802,
+        Tunnel-Private-Group-Id = "2000"
+
+# No VLAN attributes — authenticates and lands on the SSID's own network.
+plainuser Cleartext-Password := "testpass"
+
+DEFAULT Auth-Type := Reject

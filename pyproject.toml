@@ -1,22 +1,18 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "80211-testing-framework"
-version = "0.1.0"
-description = "Capability-aware WiFi test framework for OpenWiFi APs"
+version = "0.2.0"
+description = "Capability-aware OpenWiFi AP regression framework (direct SSH, no cloud SDK)"
 requires-python = ">=3.10"
 dependencies = [
     # Test runner + reporting
     "pytest>=8.0",
     "allure-pytest>=2.13",
 
-    # HTTP clients
-    "requests>=2.31",
-    "urllib3>=2.0",
-
-    # SSH / serial
+    # SSH to the AP and the RPi5 station
     "paramiko>=3.4",
 
     # Config validation
@@ -46,6 +42,8 @@ target-version = ["py310"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 
 [tool.mypy]

@@ -1,92 +1,157 @@
 """
-Capability models — hardware inventory and testbed capability representation.
+Capability model — what this bench can actually do.
+
+A requirement in :mod:`framework.examples.catalog` is satisfied only when both
+ends support it. 6 GHz is the clearest case: the AP having a 6 GHz radio is
+useless if the BE200 is under a regulatory domain that forbids it, so the check
+is an intersection, not a union.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from framework.config import VLANEntry, StaticRadiusServer
-
-
-class RadioType(Enum):
-    MULTI_STA        = "multi_sta"         # MT7915, MT7996 — up to 19 STAs per radio
-    SINGLE_STA_WIFI7 = "single_sta_wifi7"  # BE200 — 1 STA per radio, WiFi 7
-    GENERIC          = "generic"           # Everything else — 1 STA per radio
+from framework.examples.catalog import Example, Requirement
 
 
 @dataclass
-class RadioInfo:
-    name: str                        # e.g. "1.1.wiphy0"
-    chipset: str                     # e.g. "MT7915", "BE200", "unknown"
-    radio_type: RadioType
-    max_stations: int
-    wifi_gen: int                    # 5, 6, 7
-    supported_bands: list[str] = field(default_factory=list)  # ["2.4GHz","5GHz","6GHz"]
+class RadioCapability:
+    """One radio, on either end of the link."""
+
+    name: str
+    bands: frozenset[str] = frozenset()
+    wifi_gen: int = 0          # 4, 5, 6, 7 — 0 when undetermined
+    owner: str = "ap"          # "ap" or "station"
 
 
 @dataclass
 class TestbedCapabilities:
-    # Presence flags
-    has_lanforge: bool = False
-    has_rpi5: bool     = False
-    has_infra: bool    = False        # managed infra box (SSH + dnsmasq/freeradius)
+    """A snapshot taken once per session, before any test runs."""
 
-    # Radio inventory (populated by LANforge probe)
-    radios: list[RadioInfo] = field(default_factory=list)
+    ap_reachable: bool = False
+    station_reachable: bool = False
 
-    # Managed infrastructure flags (set when infra box is reachable and services are active)
-    has_radius: bool     = False
-    has_vlan_infra: bool = False
+    ap_radios: list[RadioCapability] = field(default_factory=list)
+    station_radios: list[RadioCapability] = field(default_factory=list)
 
-    # Pre-configured (static) network resources declared in testbed.yaml network: block
-    # These are available even when there is no managed infra box.
-    vlans: list["VLANEntry"]                   = field(default_factory=list)
-    static_radius: "StaticRadiusServer | None" = None
+    # External resources, from the `external:` config block plus liveness probes.
+    has_radius: bool = False
+    has_vlan: bool = False
+    has_peer_ap: bool = False
+    has_captive_backend: bool = False
+    has_dhcp_server: bool = False
+    has_iperf_server: bool = False
+    has_switch_hw: bool = False
+    has_gps_hw: bool = False
+    has_wwan_hw: bool = False
+    has_internet: bool = False
 
-    # Derived — computed in __post_init__
-    has_multi_sta_radio: bool  = field(init=False, default=False)
-    has_wifi7_radio: bool      = field(init=False, default=False)
-    has_sixghz_radio: bool     = field(init=False, default=False)
-    total_sta_capacity: int    = field(init=False, default=0)
-    best_engine: str           = field(init=False, default="none")
+    # Notes shown in the report — why a probe concluded what it did.
+    notes: list[str] = field(default_factory=list)
 
-    # Derived presence flags that merge both managed and static sources
-    radius_available: bool    = field(init=False, default=False)  # managed OR static
-    vlans_available: bool     = field(init=False, default=False)  # managed OR static
+    # ── Derived ──────────────────────────────────────────────────────────────
 
-    def __post_init__(self) -> None:
-        self.has_multi_sta_radio  = any(r.radio_type == RadioType.MULTI_STA for r in self.radios)
-        self.has_wifi7_radio      = any(r.radio_type == RadioType.SINGLE_STA_WIFI7 for r in self.radios)
-        self.has_sixghz_radio     = any("6GHz" in r.supported_bands for r in self.radios)
-        self.total_sta_capacity   = sum(r.max_stations for r in self.radios)
+    @property
+    def ap_bands(self) -> frozenset[str]:
+        if not self.ap_radios:
+            return frozenset()
+        return frozenset().union(*(r.bands for r in self.ap_radios))
 
-        if self.has_lanforge:
-            self.best_engine = "lanforge"
-        elif self.has_rpi5:
-            self.best_engine = "rpi5"
-        else:
-            self.best_engine = "none"
+    @property
+    def station_bands(self) -> frozenset[str]:
+        if not self.station_radios:
+            return frozenset()
+        return frozenset().union(*(r.bands for r in self.station_radios))
 
-        # Merge managed + static sources into unified "available" flags.
-        # Tests that need RADIUS/VLANs can check these without caring whether
-        # the resource is dynamically managed or pre-configured.
-        self.radius_available = self.has_radius or (self.static_radius is not None)
-        self.vlans_available  = self.has_vlan_infra or len(self.vlans) > 0
+    @property
+    def usable_bands(self) -> frozenset[str]:
+        """Bands both ends can use — the only ones a link test can exercise."""
+        return self.ap_bands & self.station_bands
 
-    # ── Convenience helpers ───────────────────────────────────────────────────
+    @property
+    def has_sixghz(self) -> bool:
+        return "6G" in self.usable_bands
 
-    def get_vlan(self, *, id: int | None = None, name: str | None = None) -> "VLANEntry":
-        """
-        Look up a pre-configured VLAN by tag ID or name.
+    @property
+    def has_wifi7(self) -> bool:
+        ap7 = any(r.wifi_gen >= 7 for r in self.ap_radios)
+        sta7 = any(r.wifi_gen >= 7 for r in self.station_radios)
+        return ap7 and sta7
 
-        Raises ValueError if no match is found or no static VLANs are configured.
-        """
-        for v in self.vlans:
-            if id is not None and v.id == id:
-                return v
-            if name is not None and v.name == name:
-                return v
-        criteria = f"id={id}" if id is not None else f"name={name!r}"
-        raise ValueError(f"No pre-configured VLAN with {criteria}")
+    @property
+    def has_station(self) -> bool:
+        return self.station_reachable
+
+    # ── Requirement checking ─────────────────────────────────────────────────
+
+    def satisfies(self, req: Requirement) -> bool:
+        return {
+            Requirement.STATION: self.has_station,
+            Requirement.RADIUS: self.has_radius,
+            Requirement.VLAN: self.has_vlan,
+            Requirement.PEER_AP: self.has_peer_ap,
+            Requirement.CAPTIVE_BACKEND: self.has_captive_backend,
+            Requirement.SWITCH_HW: self.has_switch_hw,
+            Requirement.GPS_HW: self.has_gps_hw,
+            Requirement.WWAN_HW: self.has_wwan_hw,
+            Requirement.DHCP_SERVER: self.has_dhcp_server,
+            Requirement.INTERNET: self.has_internet,
+            Requirement.SIXGHZ: self.has_sixghz,
+            Requirement.WIFI7: self.has_wifi7,
+        }[req]
+
+    def unmet(self, example: Example) -> list[Requirement]:
+        return [
+            r for r in sorted(example.requires, key=lambda r: r.value)
+            if not self.satisfies(r)
+        ]
+
+    def skip_reason(self, example: Example) -> str | None:
+        """A sentence naming what the bench is missing, or None if runnable."""
+        missing = self.unmet(example)
+        if not missing:
+            return None
+        return f"testbed lacks {_describe(missing)}"
+
+    # ── Reporting ────────────────────────────────────────────────────────────
+
+    def as_rows(self) -> list[tuple[str, str]]:
+        return [
+            ("AP reachable", _yn(self.ap_reachable)),
+            ("Station reachable", _yn(self.station_reachable)),
+            ("AP bands", ", ".join(sorted(self.ap_bands)) or "none detected"),
+            ("Station bands", ", ".join(sorted(self.station_bands)) or "none detected"),
+            ("Usable bands", ", ".join(sorted(self.usable_bands)) or "none"),
+            ("Wi-Fi 7 link", _yn(self.has_wifi7)),
+            ("RADIUS", _yn(self.has_radius)),
+            ("VLAN trunk", _yn(self.has_vlan)),
+            ("Peer AP", _yn(self.has_peer_ap)),
+            ("iperf3 server", _yn(self.has_iperf_server)),
+            ("Internet", _yn(self.has_internet)),
+        ]
+
+
+_HUMAN = {
+    Requirement.STATION: "a reachable RPi5 station",
+    Requirement.RADIUS: "a RADIUS server",
+    Requirement.VLAN: "a VLAN-trunked upstream switch",
+    Requirement.PEER_AP: "a second AP or tunnel endpoint",
+    Requirement.CAPTIVE_BACKEND: "an external captive-portal backend",
+    Requirement.SWITCH_HW: "an AP with a managed switch fabric",
+    Requirement.GPS_HW: "GPS hardware",
+    Requirement.WWAN_HW: "a WWAN modem",
+    Requirement.DHCP_SERVER: "an external DHCP server",
+    Requirement.INTERNET: "internet reachability",
+    Requirement.SIXGHZ: "6 GHz support on both AP and station",
+    Requirement.WIFI7: "Wi-Fi 7 support on both AP and station",
+}
+
+
+def _describe(reqs: list[Requirement]) -> str:
+    parts = [_HUMAN[r] for r in reqs]
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + f" and {parts[-1]}"
+
+
+def _yn(value: bool) -> str:
+    return "yes" if value else "no"

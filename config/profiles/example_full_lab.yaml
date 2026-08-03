@@ -1,0 +1,75 @@
+# Full lab: AP, RPi5 station, and the external resources the remaining
+# examples need. Every block under `external:` unlocks a group of tests;
+# delete a block and those tests skip with a reason instead of failing.
+
+testbed:
+  name: bench-full
+  description: AP + RPi5 + RADIUS + VLAN trunk + peer AP
+  operator: firas
+
+ap:
+  host: 192.168.1.1
+  user: root
+  password: ${AP_PASSWORD}
+  disable_ucentral_agent: true
+  restore_agent_after_run: true
+
+station:
+  host: 192.168.1.50
+  user: pi
+  password: ${RPI5_PASSWORD}
+  root_password: ${RPI5_ROOT_PASSWORD}
+  iface: wlan1
+  country: US
+
+external:
+  # Unlocks: crypto-enterprise, radius*, psk2-radius, wpa2-radius, eap_local,
+  # ieee8021x-*, captive-radius, wifi-6e-*-radius
+  radius:
+    host: 192.168.1.20
+    secret: ${RADIUS_SECRET}
+    auth_port: 1812
+    acct_port: 1813
+    identity: testuser
+    password: ${RADIUS_USER_PASSWORD}
+    eap_method: PEAP
+
+  # Unlocks: vlan, multi-psk, dhcp-relay, big, gre, vxlan, switch-vlan
+  vlan:
+    ids: [100, 200]
+    gateways:
+      100: 192.168.100.1
+      200: 192.168.200.1
+
+  # Unlocks throughput assertions in the connectivity and rate-limit tests.
+  iperf_server: 192.168.1.10
+
+  # Unlocks: mesh, wds-ap, wds-sta, gre, gre6, vxlan, roaming-psk2-radius
+  peer_ap_host: 192.168.1.2
+
+  # Unlocks: dhcp-relay
+  dhcp_server: 192.168.1.20
+
+  # Unlocks: captive-uam
+  captive_backend: https://uam.example.net
+
+  # Set to match what the DUT physically has.
+  has_switch_hw: false
+  has_gps_hw: false
+  has_wwan_hw: false
+
+  # Set false on an air-gapped bench so ntp, online-check and wifi-6e-afc skip.
+  has_internet: true
+
+normalization:
+  country: US
+  avoid_dfs: true
+  force_2g_width: 20
+  strict_apply: true
+
+settings:
+  association_timeout: 45
+  apply_timeout: 180
+  traffic_duration_s: 15
+  report_dir: reports
+  allure_results_dir: allure-results

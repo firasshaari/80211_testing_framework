@@ -1,25 +1,37 @@
 """
-Capability requirement markers.
-Test authors import these — no direct pytest knowledge needed.
+Markers for selecting subsets of the regression sweep.
+
+Feature-area markers mirror :class:`framework.examples.catalog.Area`, so
+``pytest -m security`` and ``catalog.by_area(Area.SECURITY)`` always agree.
+
+Hardware requirements are *not* markers. They are checked against the probed
+capabilities at runtime, which lets a skip say "testbed lacks a RADIUS server"
+instead of "did not match marker expression".
 """
+from __future__ import annotations
+
 import pytest
 
-# ── Traffic engine ────────────────────────────────────────────────────────────
-requires_lanforge       = pytest.mark.requires_lanforge
-requires_rpi5           = pytest.mark.requires_rpi5
-requires_two_endpoints  = pytest.mark.requires_two_endpoints
+from framework.examples.catalog import Area
 
-# ── Radio type ────────────────────────────────────────────────────────────────
-requires_multi_sta      = pytest.mark.requires_multi_sta
-requires_wifi7          = pytest.mark.requires_wifi7
-requires_sixghz         = pytest.mark.requires_sixghz
+security = pytest.mark.security
+network_mode = pytest.mark.network_mode
+rate_limit = pytest.mark.rate_limit
+qos = pytest.mark.qos
+roaming = pytest.mark.roaming
+captive = pytest.mark.captive
+vlan = pytest.mark.vlan
+tunnel = pytest.mark.tunnel
+services = pytest.mark.services
+telemetry = pytest.mark.telemetry
+switch = pytest.mark.switch
+wifi_gen = pytest.mark.wifi_gen
+wwan = pytest.mark.wwan
+
+regression = pytest.mark.regression
+config_only = pytest.mark.config_only
 
 
-def requires_min_stations(n: int):
-    """Skip if total testbed STA capacity is less than n."""
-    return pytest.mark.requires_min_stations(n)
-
-
-# ── Infrastructure ────────────────────────────────────────────────────────────
-requires_radius         = pytest.mark.requires_radius
-requires_vlan           = pytest.mark.requires_vlan
+def for_area(area: Area):
+    """The marker matching a catalog area — used by parametrized suites."""
+    return getattr(pytest.mark, area.value)
