@@ -15,6 +15,11 @@
     "matchedStatuses": ["failed"]
   },
   {
+    "name": "AP advertised encryption it never describes",
+    "messageRegex": ".*neither a WPA nor an RSN information element.*",
+    "matchedStatuses": ["failed", "broken"]
+  },
+  {
     "name": "Client could not connect",
     "messageRegex": ".*(Did not associate|DHCP never answered|no DHCP lease|wpa_state=SCANNING).*",
     "matchedStatuses": ["failed"]
