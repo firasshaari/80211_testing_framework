@@ -204,8 +204,11 @@ EXAMPLES: tuple[Example, ...] = (
        [R.STATION], ["2G", "5G"], ["psk2"]),
     _e("captive-webroot", A.CAPTIVE, M.BRIDGE, "Portal serving a custom embedded webroot",
        [R.STATION], ["2G", "5G"], ["psk2"]),
+    # One of its two portals is UAM, pointed at a commercial hosted service, so
+    # the splash redirects off-box and no bench without that backend can clear
+    # it. Same requirement as captive-uam rather than a guaranteed failure.
     _e("captive-multiple", A.CAPTIVE, M.BRIDGE, "Several portal-enabled SSIDs at once",
-       [R.STATION], ["2G", "5G"], ["psk2"]),
+       [R.STATION, R.CAPTIVE_BACKEND], ["2G", "5G"], ["psk2"]),
     _e("captive-radius", A.CAPTIVE, M.BRIDGE, "Portal authenticating against RADIUS",
        [R.STATION, R.RADIUS], ["2G", "5G"], ["psk2"]),
     _e("captive-uam", A.CAPTIVE, M.BRIDGE, "External UAM portal redirect",

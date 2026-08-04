@@ -131,7 +131,73 @@ def normalize_config(
     if radio_caps:
         _drop_unsupported_bands(cfg, report, radio_caps)
 
+    _drop_roaming_without_wpa2(cfg, report)
+    _fix_known_bad_enums(cfg, report)
+
     return cfg, report
+
+
+# Values the corpus uses that no uCentral schema accepts, and what they meant.
+# Keyed by the path they appear at, so a value that is legal elsewhere is not
+# rewritten by accident.
+_ENUM_FIXUPS = {
+    ("services", "fingerprint", "mode"): {"raw-data": "raw"},
+}
+
+
+def _fix_known_bad_enums(config: dict, report: NormalizationReport) -> None:
+    """
+    Correct example values this firmware's schema rejects outright.
+
+    ``fingerprint-raw`` asks for ``mode: "raw-data"``; the schema allows only
+    ``polled``, ``final`` or ``raw``, so the config is refused and the feature
+    is never exercised at all. Rewriting it to the value it plainly meant keeps
+    the case testing fingerprinting rather than testing a typo — the same
+    treatment the corpus's ``CA`` country codes and 80 MHz 2.4 GHz radios get.
+    """
+    for path, mapping in _ENUM_FIXUPS.items():
+        node = config
+        for key in path[:-1]:
+            node = node.get(key) if isinstance(node, dict) else None
+            if not isinstance(node, dict):
+                break
+        else:
+            leaf = path[-1]
+            if isinstance(node, dict) and node.get(leaf) in mapping:
+                was = node[leaf]
+                node[leaf] = mapping[was]
+                report.record(
+                    f"{'/'.join(path)}: {was!r} -> {node[leaf]!r} "
+                    f"(not a value the schema accepts)"
+                )
+
+
+# Roaming needs a PMK to hand between APs, so the schema requires WPA2 or
+# later. These protos predate it (or have no key at all).
+_PRE_WPA2_PROTOS = frozenset({"none", "open", "wep", "psk", "wpa"})
+
+
+def _drop_roaming_without_wpa2(config: dict, report: NormalizationReport) -> None:
+    """
+    Strip ``roaming`` from SSIDs whose encryption cannot carry it.
+
+    ``maverick`` puts 802.11r on an open SSID, which is meaningless — there is
+    no pairwise key to hand over — and this firmware refuses the whole config
+    with "Roaming requires wpa2 or later". Like the 80 MHz-on-2.4 GHz entries,
+    it is an inconsistency in the example rather than something to test, so it
+    is cleaned up instead of failing the case.
+    """
+    for iface in config.get("interfaces") or []:
+        for ssid in iface.get("ssids") or []:
+            if not ssid.get("roaming"):
+                continue
+            proto = ((ssid.get("encryption") or {}).get("proto") or "none").lower()
+            if proto in _PRE_WPA2_PROTOS:
+                ssid.pop("roaming")
+                report.record(
+                    f"dropped roaming from SSID {ssid.get('name', '?')!r} — "
+                    f"proto {proto} predates WPA2 and the AP requires WPA2 or later"
+                )
 
 
 def _drop_unsupported_bands(config: dict, report: NormalizationReport, radio_caps: dict) -> None:
@@ -324,6 +390,14 @@ def assign_bridge_vlan(
     interfaces = config.get("interfaces") or []
     moved: list[str] = []
     left_dynamic: list[str] = []
+    # Reuse a tagged twin if one is already here. This runs a second time after
+    # bridge-forcing, which is what catches SSIDs that started on a downstream
+    # interface and would otherwise be bridged onto the untagged management
+    # interface — and a second pass must not build a duplicate interface.
+    existing = {
+        (i.get("vlan") or {}).get("id"): i
+        for i in interfaces if i.get("role") == "upstream" and i.get("vlan")
+    }
 
     for iface in list(interfaces):
         if iface.get("role") != "upstream" or iface.get("vlan"):
@@ -344,6 +418,11 @@ def assign_bridge_vlan(
         if not ssids:
             continue
         iface["ssids"] = [s for s in all_ssids if _has_dynamic_vlan(s)]
+
+        if vlan_id in existing:
+            existing[vlan_id].setdefault("ssids", []).extend(ssids)
+            moved.extend(s.get("name", "?") for s in ssids)
+            continue
 
         tagged = {
             "name": f"{iface.get('name', 'WAN')}{vlan_id}",
@@ -395,13 +474,23 @@ def name_ssids_for_test(
     The use-case suffix comes from the encryption proto, which is what
     distinguishes the SSIDs within a config. SSID names are capped at the 32
     octets 802.11 allows.
+
+    Names must stay unique. Several examples carry two SSIDs sharing one proto —
+    ``captive-multiple`` has a UAM portal and a click-to-continue portal both on
+    psk2 — and naming by proto alone collapses them onto one name. Two BSSes
+    with the same name on one radio is not a configuration the renderer can
+    make sense of: on this DUT it hangs ``ucentral.uc`` until it is killed and
+    leaves the AP without its management path, which then fails the next test
+    too. A collision is disambiguated by what actually differs between them.
     """
     renamed: list[str] = []
+    taken: set[str] = set()
     for iface in config.get("interfaces") or []:
         for ssid in iface.get("ssids") or []:
             enc = ssid.setdefault("encryption", {})
             proto = (enc.get("proto") or "open").lower()
-            new = f"{ap_name}-{proto}"[:32]
+            new = _unique_ssid_name(f"{ap_name}-{proto}", ssid, taken)
+            taken.add(new)
             if ssid.get("name") != new:
                 renamed.append(f"{ssid.get('name')} -> {new}")
                 ssid["name"] = new
@@ -414,11 +503,53 @@ def name_ssids_for_test(
     return config
 
 
+def _unique_ssid_name(base: str, ssid: dict, taken: set[str]) -> str:
+    """
+    ``base``, or ``base`` plus whatever distinguishes this SSID from its twin.
+
+    Prefers a suffix that means something to a reader watching a scan list — the
+    portal's auth mode, "radius", "mpsk" — and only falls back to a counter when
+    nothing else sets the two apart. Always trimmed to the 32 octets 802.11
+    allows, and trimmed on the *base* so the distinguishing suffix survives.
+    """
+    def fit(name: str) -> str:
+        if len(name) <= 32:
+            return name
+        head, _, tail = name.rpartition("-")
+        return f"{head[:32 - len(tail) - 1]}-{tail}"
+
+    if fit(base) not in taken:
+        return fit(base)
+
+    captive = ssid.get("captive") or {}
+    hints = []
+    if captive.get("auth-mode"):
+        hints.append(str(captive["auth-mode"]).replace("-to-continue", ""))
+    elif captive:
+        hints.append("captive")
+    if ssid.get("radius"):
+        hints.append("radius")
+    if ssid.get("multi-psk"):
+        hints.append("mpsk")
+
+    for hint in hints:
+        candidate = fit(f"{base}-{hint}")
+        if candidate not in taken:
+            return candidate
+
+    for n in range(2, 100):
+        candidate = fit(f"{base}-{n}")
+        if candidate not in taken:
+            return candidate
+    return fit(base)
+
+
 def restrict_to_band(
     config: dict,
     band: str,
     *,
     channel_plan: dict[str, int] | None = None,
+    radio_caps: dict | None = None,
     report: NormalizationReport | None = None,
 ) -> dict:
     """
@@ -428,6 +559,14 @@ def restrict_to_band(
     "WPA3 works" from "WPA3 works on 5 GHz and is broken on 2.4". With every
     band live at once a station picks whichever it likes and the result says
     nothing about the others.
+
+    *radio_caps* must be passed whenever it is known. This step runs after the
+    clamping in :func:`normalize_config`, and it can introduce a radio that step
+    never saw — most examples declare no 2.4 GHz radio, so one is synthesised
+    here. Left unclamped it asked for VHT20 on a radio that only does HT, and
+    ``strict`` mode correctly rejected the whole config. That single omission
+    accounted for the great majority of the 2 GHz "config was rejected"
+    failures in a full sweep.
     """
     plan = DEFAULT_CHANNEL_PLAN if channel_plan is None else channel_plan
     radios = config.get("radios") or []
@@ -447,6 +586,13 @@ def restrict_to_band(
         if band == "2G":
             radio["channel-width"] = min(radio.get("channel-width") or 20, 20)
     config["radios"] = kept
+
+    if radio_caps:
+        for idx, radio in enumerate(kept):
+            _clamp_to_radio_caps(
+                radio, idx, report or NormalizationReport(example="restrict"),
+                radio_caps, False,
+            )
 
     for iface in config.get("interfaces") or []:
         for ssid in iface.get("ssids") or []:
@@ -719,6 +865,64 @@ def substitute_vlans(
     if changed and report is not None:
         pairs = ", ".join(f"{o}->{n}" for o, n in sorted(changed.items()))
         report.record(f"VLAN ids remapped to this lab's VLANs: {pairs}")
+    return config
+
+
+def point_radius_at(
+    config: dict,
+    host: str,
+    secret: str,
+    *,
+    auth_port: int = 1812,
+    acct_port: int = 1813,
+    report: NormalizationReport | None = None,
+) -> dict:
+    """
+    Rewrite every RADIUS server reference onto this lab's server, in place.
+
+    The corpus points at ``10.0.0.1`` for enterprise SSIDs and at a public
+    address for the RADIUS-backed captive portal. Neither exists on a test
+    bench, so authentication is attempted against a black hole: the AP is
+    configured exactly as the example intends and the client still never gets
+    on, which reads as an AP defect when it is purely environmental — the same
+    trap :func:`substitute_vlans` exists to avoid.
+
+    Covers both shapes the schema uses: the ``radius`` block on an SSID, with
+    its ``authentication`` / ``accounting`` sub-objects, and the flat
+    ``auth-server`` / ``auth-secret`` keys on the captive service.
+    """
+    touched: list[str] = []
+
+    def rewrite(node, where: str) -> None:
+        if isinstance(node, dict):
+            for role, port in (("authentication", auth_port), ("accounting", acct_port)):
+                block = node.get(role)
+                if isinstance(block, dict) and "host" in block:
+                    block["host"], block["secret"] = host, secret
+                    block.setdefault("port", port)
+                    block["port"] = port
+                    touched.append(f"{where}/{role}")
+            if "auth-server" in node:
+                node["auth-server"], node["auth-secret"] = host, secret
+                node["auth-port"] = auth_port
+                touched.append(f"{where}/captive-auth")
+            if "acct-server" in node:
+                node["acct-server"], node["acct-secret"] = host, secret
+                node["acct-port"] = acct_port
+                touched.append(f"{where}/captive-acct")
+            for key, value in node.items():
+                rewrite(value, key if isinstance(key, str) else where)
+        elif isinstance(node, list):
+            for item in node:
+                rewrite(item, where)
+
+    rewrite(config, "config")
+
+    if touched and report is not None:
+        report.record(
+            f"RADIUS pointed at this lab's server {host}:{auth_port} "
+            f"({len(touched)} reference(s): {', '.join(sorted(set(touched)))})"
+        )
     return config
 
 

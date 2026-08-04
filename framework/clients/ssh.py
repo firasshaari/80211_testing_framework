@@ -106,6 +106,15 @@ class SSHSession:
         except (paramiko.SSHException, socket.error, OSError) as exc:
             raise SSHError(f"Cannot SSH to {self.label} ({self.user}@{self.host}): {exc}") from exc
 
+        transport = client.get_transport()
+        if transport is not None:
+            # A test spends long stretches idle — an AP apply takes 45-60s with
+            # nothing on the station's session — and an idle connection gets
+            # reaped somewhere in between, leaving a socket that still reports
+            # active and then fails on the next command. Keepalives stop the
+            # connection going quiet for long enough to be collected.
+            transport.set_keepalive(15)
+
         self._client = client
         log.debug("SSH connected to %s", self.label)
         return client
@@ -146,7 +155,7 @@ class SSHSession:
         actual = f'export PATH="$PATH:{_SBIN_PATH}"; {actual}'
 
         try:
-            stdin, stdout, stderr = client.exec_command(actual, timeout=timeout, get_pty=False)
+            stdin, stdout, stderr = self._open_channel(client, actual, timeout)
             if sudo and self._sudo_password:
                 stdin.write(self._sudo_password + "\n")
                 stdin.flush()
@@ -159,6 +168,23 @@ class SSHSession:
         if rc != 0:
             log.debug("%s: rc=%s for %s", self.label, rc, command)
         return CommandResult(command=command, stdout=out, stderr=err, rc=rc)
+
+    def _open_channel(self, client, command: str, timeout: int):
+        """
+        Start *command*, reconnecting once if the session died while idle.
+
+        The retry is deliberately confined to opening the channel. Failing here
+        means the command was never delivered, so running it again is safe;
+        once output is being read the command *has* run, and a blind retry could
+        apply a config or start a DHCP client twice.
+        """
+        try:
+            return client.exec_command(command, timeout=timeout, get_pty=False)
+        except (paramiko.SSHException, socket.error, OSError) as exc:
+            log.warning("%s: session went stale (%s); reconnecting", self.label, exc)
+            self.close()
+            client = self.connect()
+            return client.exec_command(command, timeout=timeout, get_pty=False)
 
     def run_checked(self, command: str, *, timeout: int = 60, sudo: bool = False) -> str:
         return self.run(command, timeout=timeout, sudo=sudo).check().stdout
@@ -202,36 +228,42 @@ class SSHSession:
         self._put_text_via_shell(content, remote_path)
 
     # dropbear's command line is limited, so large files go up in pieces.
-    _CHUNK_BYTES = 8192
+    # Chunks are shell-quoted before sending, which costs a few characters per
+    # quote in the content, so this leaves generous headroom under the buffer.
+    _CHUNK_BYTES = 4096
 
     def _put_text_via_shell(self, content: str, remote_path: str) -> None:
         """
         Fallback upload for images whose dropbear has no SFTP subsystem.
 
-        Written in chunks and appended: a single heredoc carrying a large
+        Sent in chunks and appended, because a single command carrying a whole
         config — ``captive-webroot`` is over 250 KB — overruns the remote
         command buffer and the connection is reset mid-transfer.
-        """
-        marker = "__EOF_80211_FRAMEWORK__"
-        if marker in content:
-            raise SSHError("Content collides with the heredoc marker")
 
+        Each chunk goes through ``printf '%s'``, which writes exactly the bytes
+        it is given. The obvious alternative, a quoted heredoc, silently appends
+        a newline per chunk: harmless between JSON tokens, but a raw newline
+        inside a string literal is invalid JSON, so a config whose 8 KB boundary
+        landed mid-string was corrupted the same way on every retry.
+        ``data-plane`` and ``captive-webroot`` both did. ``base64`` is not
+        available on this firmware, so it is not an option here.
+        """
         quoted = shlex.quote(remote_path)
         self.run(f": > {quoted}").check()
         for start in range(0, len(content), self._CHUNK_BYTES):
             chunk = content[start:start + self._CHUNK_BYTES]
+            # Only the format string interprets escapes; the argument is
+            # written verbatim, so JSON backslashes and % survive intact.
             self.run(
-                f"cat >> {quoted} <<'{marker}'\n{chunk}\n{marker}\n", timeout=120
+                f"printf '%s' {shlex.quote(chunk)} >> {quoted}", timeout=120
             ).check()
 
         # A truncated config is worse than a failed upload — it may still parse.
         size = self.run(f"wc -c < {quoted}").stdout.strip()
         expected = len(content.encode())
-        # Each chunk contributes one trailing newline from the heredoc.
-        chunks = (len(content) + self._CHUNK_BYTES - 1) // self._CHUNK_BYTES
-        if size.isdigit() and abs(int(size) - expected) > chunks + 1:
+        if size.isdigit() and int(size) != expected:
             raise SSHError(
-                f"Upload of {remote_path} is {size} bytes, expected about {expected}"
+                f"Upload of {remote_path} is {size} bytes, expected {expected}"
             )
 
     def read_text(self, remote_path: str) -> str:

@@ -41,6 +41,10 @@ ROLLBACK_CANCEL = f"{REMOTE_CONFIG_DIR}/rollback.cancel"
 _UCI_BATCH_MARKER = "UCI batch output:"
 _LOG_MARKER = "Log messages:"
 _FATAL_MARKER = "Fatal error while generating UCI"
+_STRICT_REJECT = "Rejecting config due to strict-mode validation"
+# ucentral.uc dies here when it cannot open the config it was handed: the open
+# returns null and the very next call is `inputfile.read(...)`.
+_UNREADABLE_INPUT = "left-hand side is not a function"
 _ERROR_LINE = re.compile(r"^\s*\[E\]\s*(.+)$", re.MULTILINE)
 _WARN_LINE = re.compile(r"^\s*\[W\]\s*(.+)$", re.MULTILINE)
 
@@ -61,9 +65,17 @@ class ApplyResult:
     def reason(self) -> str:
         if self.success:
             return "applied"
+        # A renderer that hung is not a config the AP refused, and calling both
+        # "rejected" sent several real hangs to the wrong triage bucket.
+        if self.hung:
+            return self.stderr.strip().splitlines()[0]
         if self.errors:
             return "; ".join(self.errors[:5])
         return "ucentral.uc produced no UCI batch and no error detail"
+
+    @property
+    def hung(self) -> bool:
+        return "hung and was killed" in self.stderr
 
 
 def parse_apply_output(stdout: str, stderr: str) -> ApplyResult:
@@ -98,7 +110,21 @@ def parse_apply_output(stdout: str, stderr: str) -> ApplyResult:
         )
 
     if not errors:
-        errors.append("no UCI batch in ucentral.uc output — config was rejected")
+        # Strict mode refuses on a *warning*, and says so on its own line
+        # without an [E] prefix — so the renderer's actual explanation was
+        # being thrown away and every one of these reported as the useless
+        # "no UCI batch". Quote the reason, and the warnings that caused it.
+        if _UNREADABLE_INPUT in stdout or _UNREADABLE_INPUT in stderr:
+            errors.append(
+                "ucentral.uc could not read the config file it was given "
+                "(it died on inputfile.read) — the file was missing or "
+                "unreadable, not refused"
+            )
+        elif _STRICT_REJECT in stdout or _STRICT_REJECT in stderr:
+            detail = "; ".join(warnings) if warnings else "no warning was printed"
+            errors.append(f"{_STRICT_REJECT} ({detail})")
+        else:
+            errors.append("no UCI batch in ucentral.uc output — config was rejected")
     return ApplyResult(False, errors, warnings, stdout=stdout, stderr=stderr)
 
 
@@ -415,11 +441,22 @@ class APClient:
 
         deadline = time.monotonic() + timeout
         finished = False
+        rounds = 0
         while time.monotonic() < deadline:
             try:
                 if self.ssh.exists(APPLY_RC):
                     finished = True
                     break
+                # The apply's own `reload_config` fires procd's trigger and
+                # brings the uCentral agent back up *while the render is still
+                # running*. The agent then drives its own reload, and the two
+                # wait on network.wireless settling that the other keeps
+                # disturbing — the render never returns and the whole timeout
+                # is spent. Holding the agent down for the apply window, not
+                # just after it, is what stops that.
+                rounds += 1
+                if rounds % 5 == 0:
+                    self._ensure_agent_down()
             except SSHError:
                 # Session died with the service restart; reconnect and keep waiting.
                 self.ssh.close()
@@ -487,6 +524,18 @@ class APClient:
         payload = json.dumps(config, indent=2)
         self.ssh.put_text(payload, remote)
 
+        # Let the previous config finish coming up first. The apply pipeline
+        # waits internally for network.wireless to settle, and starting it while
+        # a radio is still `pending` from the last case is a way to wedge it
+        # there for the whole timeout — `crypto-psk` and `eap_local` both hung
+        # for 180s on 5G directly after their own 2G run, having applied
+        # cleanly moments earlier.
+        if not self.wait_for_wireless(timeout=60):
+            log.warning(
+                "Radios on %s still pending before applying %r — applying anyway",
+                self.host, name,
+            )
+
         # Safety net first: if this config costs us management access, the AP
         # recovers on its own instead of needing a physical power cycle.
         self.arm_rollback(seconds=rollback_seconds)
@@ -498,15 +547,32 @@ class APClient:
         # AP rejected anything — a real rejection always prints "[E]" lines or
         # "Rejecting config". Those two look identical downstream, so retry
         # once rather than reporting a config error that did not happen.
-        # Retry only a genuinely empty result, which means we lost the session.
-        # A hang already consumed the full timeout and killing/rerunning it just
-        # doubles the stall, so that failure is reported immediately.
-        if not stdout.strip() and "hung" not in stderr:
+        #
+        # A hang is retried too, once. Most are not the config's fault: they
+        # cluster on the apply that follows a heavy multi-SSID case, where the
+        # renderer wedges waiting on wireless state left over from the previous
+        # one. `crypto-psk`, `eap_local` and `owe` each hung on an apply that
+        # had succeeded minutes earlier with the same config. Giving the radios
+        # time to settle and running it again clears that, at the cost of one
+        # extra timeout on a config that genuinely wedges — `dual-stack` does.
+        if not stdout.strip():
+            hung = "hung" in stderr
             log.warning(
-                "Apply of %r produced no output (%s) — retrying once", name,
-                stderr or "no detail",
+                "Apply of %r %s — settling the radios and retrying once", name,
+                "hung" if hung else f"produced no output ({stderr or 'no detail'})",
             )
             self._ensure_agent_down()
+            if hung:
+                self.ssh.run("pkill -9 -f ucentral.uc || true", timeout=20)
+                self.wait_for_wireless(timeout=90)
+            # The config lives under /tmp, so anything that reboots the AP
+            # between upload and apply takes it with it — the rollback timer
+            # from an earlier case can do exactly that. ucentral.uc then dies
+            # on `inputfile.read` because the open returned null, which reads
+            # as a rejected config rather than a missing file.
+            if not self.ssh.exists(remote):
+                log.warning("%s vanished before the retry — re-uploading", remote)
+                self.ssh.put_text(payload, remote)
             stdout, stderr = self._run_apply_detached(remote, timeout)
 
         elapsed = time.monotonic() - started

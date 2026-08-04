@@ -20,6 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import allure
 import pytest
 
 from framework.ap.ap_client import APClient
@@ -35,6 +36,7 @@ from framework.examples.normalize import (
     force_forwarding_mode,
     name_ssids_for_test,
     normalize_config,
+    point_radius_at,
     restrict_to_band,
     set_strict,
     substitute_vlans,
@@ -257,6 +259,30 @@ def _seed_allure(request, cfg, ap, station, capabilities) -> None:
         (out / "categories.json").write_text(categories.read_text(), encoding="utf-8")
 
 
+def _apply_transcript(result) -> str:
+    """
+    Everything ``ucentral.uc`` said, so a rejection can actually be diagnosed.
+
+    Empty output and a schema error both surface as "rejected" but mean
+    different things: the first is the renderer dying or never starting, the
+    second is a config this firmware will not accept. The transcript is what
+    tells them apart, so it says so explicitly when there was no output at all.
+    """
+    parts = [f"exit reason: {result.reason}", f"took {result.duration_s:.1f}s"]
+    if result.errors:
+        parts.append("errors:\n  " + "\n  ".join(result.errors))
+    if result.warnings:
+        parts.append("warnings:\n  " + "\n  ".join(result.warnings))
+    for label, text in (("stdout", result.stdout), ("stderr", result.stderr)):
+        parts.append(f"--- {label} ---\n" + (text.strip() or "(empty)"))
+    if not result.stdout.strip() and not result.stderr.strip():
+        parts.append(
+            "ucentral.uc produced no output at all. That is the renderer never "
+            "running or dying before it printed, not the config being refused."
+        )
+    return "\n\n".join(parts)
+
+
 def record_config_in_allure(config: dict) -> None:
     """
     Put the config the AP is being given into the Allure report.
@@ -403,6 +429,17 @@ def prepared_example(testbed_config, capabilities, radio_caps, ctx, ap):
             # egress tagged.
             enable_vlan_awareness(config, list(vlan_cfg.ids), report=changes)
 
+        # The corpus points RADIUS at 10.0.0.1 (and the captive portal at a
+        # public address). Left alone, every enterprise and portal-RADIUS case
+        # authenticates against a host that does not exist here.
+        radius_cfg = testbed_config.external.radius
+        if radius_cfg:
+            point_radius_at(
+                config, radius_cfg.host, radius_cfg.secret,
+                auth_port=radius_cfg.auth_port, acct_port=radius_cfg.acct_port,
+                report=changes,
+            )
+
         # Non-negotiable: keep SSH on the WAN or the AP disappears mid-run.
         # 71 of 78 upstream interfaces in the corpus omit it.
         ensure_management_access(
@@ -461,7 +498,7 @@ def apply_example(ap, testbed_config, prepared_example, ctx):
 
 
 @pytest.fixture
-def apply_case(ap, testbed_config, prepared_example, ctx):
+def apply_case(ap, testbed_config, prepared_example, radio_caps, ctx):
     """
     Apply one example pinned to a specific band and forwarding mode.
 
@@ -483,9 +520,22 @@ def apply_case(ap, testbed_config, prepared_example, ctx):
         restrict_to_band(
             config, band,
             channel_plan=testbed_config.normalization.channel_plan,
+            radio_caps=radio_caps,
             report=ctx["_report"],
         )
         force_forwarding_mode(config, mode, report=ctx["_report"])
+
+        # Bridge-forcing can land SSIDs on the untagged upstream — that is the
+        # management interface, and an example whose SSIDs all started on a
+        # downstream interface (maverick, ssh, igmp, ...) has no tagged twin for
+        # it to prefer. Clients would then be bridged onto the management subnet
+        # itself, which is how the harness locked itself out of the station.
+        # Re-running the assignment moves them onto the test VLAN where they
+        # belong.
+        vlan_cfg = testbed_config.external.vlan
+        if mode == "bridge" and vlan_cfg and vlan_cfg.ids:
+            assign_bridge_vlan(config, vlan_cfg.ids[0], report=ctx["_report"])
+
         ensure_management_access(
             config, report=ctx["_report"],
             idle_timeout=testbed_config.normalization.ssh_idle_timeout,
@@ -510,6 +560,15 @@ def apply_case(ap, testbed_config, prepared_example, ctx):
             rollback_seconds=testbed_config.settings.rollback_seconds,
         )
         if not result.success:
+            # Without this the largest failure bucket reads "config was
+            # rejected" and nothing else — there is no way to tell a schema
+            # error from a renderer that produced nothing at all, which are
+            # different problems with different owners.
+            allure.attach(
+                _apply_transcript(result),
+                f"ucentral.uc output — {example.name} on {band}",
+                allure.attachment_type.TEXT,
+            )
             pytest.fail(f"AP rejected '{example.name}' on {band}/{mode}: {result.reason}")
 
         ap.wait_for_wireless(timeout=testbed_config.settings.wireless_settle_timeout)

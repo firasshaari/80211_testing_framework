@@ -5,27 +5,37 @@
     "matchedStatuses": ["failed", "broken"]
   },
   {
+    "name": "Renderer hung on the AP",
+    "messageRegex": ".*(hung and was killed|did not finish after).*",
+    "matchedStatuses": ["failed", "broken"]
+  },
+  {
+    "name": "SSID configured but never on the air",
+    "messageRegex": ".*(not broadcasting|not on the air|did not come up).*",
+    "matchedStatuses": ["failed"]
+  },
+  {
     "name": "Client could not connect",
-    "messageRegex": ".*(Did not associate|no DHCP lease|wpa_state=SCANNING).*",
+    "messageRegex": ".*(Did not associate|DHCP never answered|no DHCP lease|wpa_state=SCANNING).*",
     "matchedStatuses": ["failed"]
   },
   {
     "name": "Client connected but no traffic",
-    "messageRegex": ".*(cannot reach|no internet|replies).*",
+    "messageRegex": ".*(no traffic|cannot reach|no internet|replies).*",
     "matchedStatuses": ["failed"]
   },
   {
-    "name": "SSID did not come up",
-    "messageRegex": ".*(not broadcasting|did not come up).*",
+    "name": "Captive portal not passed",
+    "messageRegex": ".*(portal still intercepting|no form found on the splash).*",
     "matchedStatuses": ["failed"]
   },
   {
-    "name": "Harness lost the AP (not an AP fault)",
+    "name": "Harness lost the AP or the station",
     "messageRegex": ".*(in connect|Cannot SSH|not reachable over SSH|transport failed|Host is down|PipeTimeout|Socket is closed|EOFError).*",
     "matchedStatuses": ["failed", "broken"]
   },
   {
-    "name": "Apply returned nothing (intermittent harness bug)",
+    "name": "Apply returned nothing",
     "messageRegex": ".*no UCI batch in ucentral\\.uc output.*",
     "matchedStatuses": ["failed", "broken"]
   },

@@ -30,8 +30,25 @@ class SSIDSpec:
     bss_mode: str = "ap"
     vlan_id: int | None = None
     has_radius: bool = False
-    has_captive: bool = False
     has_multi_psk: bool = False
+    captive: dict = field(default_factory=dict)
+
+    @property
+    def has_captive(self) -> bool:
+        return bool(self.captive)
+
+    @property
+    def portal_login(self) -> tuple[str, str]:
+        """
+        The first username/password the portal will accept, or empty strings.
+
+        Only ``credentials`` portals carry a local list; ``radius`` and ``uam``
+        modes authenticate against a backend, so the credentials come from the
+        testbed rather than from the config.
+        """
+        for entry in self.captive.get("credentials") or []:
+            return entry.get("username", ""), entry.get("password", "")
+        return "", ""
 
     @property
     def bridged(self) -> bool:
@@ -68,6 +85,7 @@ class InterfaceSpec:
 
 def iter_interfaces(config: dict) -> list[InterfaceSpec]:
     specs: list[InterfaceSpec] = []
+    shared = (config.get("services") or {}).get("captive") or {}
     for iface in config.get("interfaces") or []:
         ipv4 = iface.get("ipv4") or {}
         vlan = iface.get("vlan") or {}
@@ -80,13 +98,20 @@ def iter_interfaces(config: dict) -> list[InterfaceSpec]:
             has_dhcp_server=bool(ipv4.get("dhcp")),
         )
         for ssid in iface.get("ssids") or []:
-            spec.ssids.append(_ssid_spec(ssid, spec))
+            spec.ssids.append(_ssid_spec(ssid, spec, shared_captive=shared))
         specs.append(spec)
     return specs
 
 
-def _ssid_spec(ssid: dict, iface: InterfaceSpec) -> SSIDSpec:
+def _ssid_spec(ssid: dict, iface: InterfaceSpec, *,
+               shared_captive: dict | None = None) -> SSIDSpec:
     enc = ssid.get("encryption") or {}
+    # An SSID takes the portal either inline, or by naming ``captive`` in its
+    # service list — in which case the settings live under ``services.captive``
+    # and are shared by every SSID that opts in.
+    captive = ssid.get("captive") or {}
+    if not captive and "captive" in (ssid.get("services") or []):
+        captive = shared_captive or {}
     return SSIDSpec(
         name=ssid.get("name", ""),
         proto=(enc.get("proto") or "none").lower(),
@@ -97,8 +122,8 @@ def _ssid_spec(ssid: dict, iface: InterfaceSpec) -> SSIDSpec:
         bss_mode=ssid.get("bss-mode", "ap"),
         vlan_id=iface.vlan_id,
         has_radius=bool(ssid.get("radius")),
-        has_captive=bool(ssid.get("captive")),
         has_multi_psk=bool(ssid.get("multi-psk")),
+        captive=captive,
     )
 
 

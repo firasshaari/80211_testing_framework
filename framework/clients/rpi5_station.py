@@ -27,6 +27,8 @@ import shlex
 import textwrap
 import time
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from urllib.parse import quote_plus, urljoin, urlsplit
 
 from framework.clients.ssh import SSHError, SSHSession
 
@@ -46,6 +48,11 @@ _EVIDENCE_PATTERNS = (
     "RSN: ", "EAP-", "EAPOL: ", "SAE:", "OWE:", "PMKSA",
     "auth_alg", "pairwise cipher", "group cipher", "key_mgmt",
     "Authentication with", "deauthenticat", "reason=",
+    # Why a BSS was never chosen. Without these a failure that never leaves
+    # SCANNING produces a log full of nothing but shutdown lines, which is
+    # exactly the case that most needs explaining.
+    "Selecting BSS", "selected BSS", "skip - ", "No suitable network",
+    "Scan results:", "wlan0: Scan", "Add radio work", "does not match",
 )
 
 
@@ -119,6 +126,166 @@ class PingResult:
 
 
 @dataclass
+class PortalResult:
+    """What happened at a captive portal, with the exchange kept as evidence."""
+    auth_mode: str = ""
+    action: str = ""
+    portal_host: str = ""
+    authorised: bool = False
+    submitted: dict = field(default_factory=dict)
+    splash: str = ""            # what the portal served before we submitted
+    response: str = ""          # what it said back
+
+    def evidence(self) -> str:
+        posted = ", ".join(
+            f"{k}={'*' * len(v) if k == 'password' else v}"
+            for k, v in self.submitted.items()
+        ) or "nothing"
+        return (
+            f"portal at {self.portal_host} (auth-mode {self.auth_mode})\n"
+            f"{self.action}\n"
+            f"posted: {posted}\n\n"
+            f"--- splash page ---\n{self.splash.strip()}\n\n"
+            f"--- reply to the form ---\n{self.response.strip()}\n"
+        )
+
+
+@dataclass
+class LoginForm:
+    """The one form on a splash page, as served."""
+    action: str = ""
+    method: str = "POST"
+    fields: dict = field(default_factory=dict)      # name -> default value
+    checkboxes: set = field(default_factory=set)    # names that must be ticked
+    text_inputs: set = field(default_factory=set)
+    password_inputs: set = field(default_factory=set)
+
+
+_FINAL_URL = "__final_url__"
+
+
+class _FormReader(HTMLParser):
+    """
+    Pulls the first form out of a splash page.
+
+    A portal page is small and machine-generated, so the standard library
+    parser is enough; pulling in a dependency to read one form would not earn
+    its place in a testbed that has to be reproducible from a checkout.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.form: LoginForm | None = None
+        self._open = False
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        a = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "form" and self.form is None:
+            self.form = LoginForm(
+                action=a.get("action", ""),
+                method=(a.get("method") or "POST").upper(),
+            )
+            self._open = True
+        elif tag == "input" and self._open and self.form is not None:
+            name = a.get("name")
+            if not name:
+                return
+            kind = (a.get("type") or "text").lower()
+            if kind == "submit":
+                return
+            self.form.fields[name] = a.get("value", "")
+            if kind == "checkbox":
+                self.form.checkboxes.add(name)
+            elif kind == "password":
+                self.form.password_inputs.add(name)
+            elif kind in ("text", "email"):
+                self.form.text_inputs.add(name)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self._open = False
+
+
+def _parse_login_form(page: str) -> LoginForm | None:
+    """
+    The first form on the page, or None if the page has no form at all.
+
+    A form with no fields still counts. ``captive-webroot`` serves a custom
+    splash whose only control is the submit button, and requiring at least one
+    named input threw that page away and left the client stuck behind a portal
+    it could have cleared.
+    """
+    reader = _FormReader()
+    reader.feed(page)
+    return reader.form
+
+
+def _fill_login_form(form: LoginForm, username: str, password: str) -> dict:
+    """
+    The form's own fields, with the parts only a person can supply filled in.
+
+    Hidden fields are echoed back untouched — uspot carries its ``action``
+    discriminator that way. A checkbox is ticked with the value the page
+    declares, which is what "I accept the terms" means over the wire.
+    """
+    fields = dict(form.fields)
+    for name in form.checkboxes:
+        fields[name] = form.fields.get(name) or "on"
+    for name in form.text_inputs:
+        if "user" in name.lower() or "name" in name.lower() or "mail" in name.lower():
+            fields[name] = username
+    for name in form.password_inputs:
+        fields[name] = password
+    return fields
+
+
+def _default_fields(auth_mode: str, username: str, password: str) -> dict:
+    """
+    What uspot's handler accepts when the page itself gives us nothing.
+
+    The handler is the same regardless of how the splash is styled, so a custom
+    webroot or a script-built form does not mean the portal cannot be cleared.
+    """
+    if auth_mode in ("credentials", "radius", "uam"):
+        return {"action": "credentials", "username": username, "password": password}
+    return {"action": "click", "accept_terms": "clicked"}
+
+
+def _describe(fields: dict, username: str) -> str:
+    if fields.get("action") == "click" or "accept_terms" in fields:
+        return "accepted the terms of use"
+    if any("pass" in k.lower() for k in fields):
+        return f"signed in as {username or '(no username)'}"
+    return f"submitted {', '.join(sorted(fields))}"
+
+
+def _split_final_url(raw: str) -> tuple[str, str]:
+    """Separate curl's body from the trailing final-URL marker."""
+    body, _, tail = raw.rpartition(_FINAL_URL)
+    if not body:
+        return raw, ""
+    return body, tail.strip()
+
+
+def _host_of(url: str) -> str:
+    return urlsplit(url).netloc or url
+
+
+def _redirected(final_url: str) -> bool:
+    """True when the probe actually landed somewhere other than the probe URL."""
+    return bool(final_url) and _host_of(final_url) != _host_of(Station.PORTAL_PROBE)
+
+
+def _resolve(base: str, action: str) -> str:
+    """Absolute URL for a form action, which is usually a bare path."""
+    if not action:
+        return base
+    if not base:
+        return action if action.startswith("http") else ""
+    return urljoin(base, action)
+
+
+@dataclass
 class ThroughputResult:
     mbps: float = 0.0
     direction: str = "downstream"
@@ -171,9 +338,14 @@ def build_network_block(
         lines += ["key_mgmt=OWE", "ieee80211w=2"]
 
     elif proto == "owe-transition":
-        # The transition BSS is advertised as open; the supplicant upgrades to
-        # OWE on its own when the AP offers the transition element.
-        lines += ["key_mgmt=OWE NONE", "ieee80211w=1"]
+        # The AP publishes two BSSes: an open one carrying the transition
+        # element, and the real OWE one (``<ssid>-OWE``). An OWE-capable
+        # station is meant to end up on the second, and OWE mandates protected
+        # management frames — so PMF is required, not optional. Asking for
+        # `ieee80211w=1` alongside `key_mgmt=NONE` let the supplicant offer a
+        # combination the OWE BSS cannot accept. The open BSS is there for
+        # legacy clients, which this station is not.
+        lines += ["key_mgmt=OWE", "ieee80211w=2"]
 
     elif proto == "psk":                       # WPA1 personal
         lines += ["key_mgmt=WPA-PSK", "proto=WPA", "pairwise=TKIP", "group=TKIP"]
@@ -536,7 +708,7 @@ class Station:
         )
         return assoc
 
-    def supplicant_evidence(self, max_lines: int = 80) -> str:
+    def supplicant_evidence(self, max_lines: int = 140) -> str:
         """The load-bearing lines of the verbose supplicant log."""
         try:
             raw = self.ssh.run(
@@ -566,19 +738,54 @@ class Station:
                 )
             time.sleep(2)
 
-        detail = self._association_failure_detail()
+        detail = self._association_failure_detail(ssid)
         self.disconnect()
         raise StationError(
             f"Did not associate to {ssid!r} within {timeout}s "
             f"(last wpa_state={last_state}). {detail}"
         )
 
-    def _association_failure_detail(self) -> str:
-        """Explain *why* association failed, rather than just that it did."""
-        seen = [s.ssid for s in self.scan()]
-        if not seen:
+    def _association_failure_detail(self, ssid: str = "") -> str:
+        """
+        Explain *why* association failed, rather than just that it did.
+
+        The interesting case is an SSID that is plainly on the air and still
+        never selected — the supplicant then logs nothing but "skip - SSID
+        mismatch" for every other BSS, which reads as if the network were
+        absent. Naming the target's advertised capabilities turns that into a
+        diagnosis: a TKIP-only BSS advertising HT is refused outright, because
+        802.11n prohibits the combination.
+        """
+        results = self.scan()
+        if not results:
             return "No SSIDs visible at all — check the radio came up on the AP."
-        return f"Visible SSIDs: {sorted(set(seen))}"
+
+        target = [r for r in results if r.ssid == ssid]
+        if not target:
+            return (
+                f"{ssid!r} was not in the scan at all. "
+                f"Visible SSIDs: {sorted({r.ssid for r in results})}"
+            )
+
+        flags = target[0].flags or "(none advertised)"
+        note = ""
+        if "Privacy" in flags and "WPA" not in flags and "RSN" not in flags:
+            note = (
+                " — the beacon sets the Privacy bit but carries neither a WPA "
+                "nor an RSN information element, so there is nothing for a "
+                "client to negotiate against. The AP is advertising encryption "
+                "it never describes; this is an AP-side fault, not a client one."
+            )
+        elif "TKIP" in flags.upper() and "CCMP" not in flags.upper() and "HT" in flags:
+            note = (
+                " — this BSS offers TKIP only; 802.11n prohibits TKIP with HT "
+                "rates, so a modern client will refuse it. The AP should drop "
+                "HT on a TKIP-only BSS."
+            )
+        return (
+            f"{ssid!r} IS on the air ({len(target)} BSS, capabilities: {flags})"
+            f" but was never selected{note}"
+        )
 
     def wpa_status(self) -> dict:
         out = self.ssh.run(f"wpa_cli -i {self.iface} status", sudo=True).stdout
@@ -595,11 +802,32 @@ class Station:
         return float(m.group(1)) if m else None
 
     def disconnect(self) -> None:
-        self.ssh.run("pkill -f 'wpa_supplicant.*regression_wpa' || true", sudo=True)
-        self.ssh.run("pkill -f 'wpa_supplicant.*regression' || true", sudo=True)
-        for client in DHCP_CLIENTS:
-            self.ssh.run(f"pkill -f '{client}.*{self.iface}' || true", sudo=True)
-        self.ssh.run(f"ip addr flush dev {self.iface} || true", sudo=True)
+        """
+        Tear the station's connection down.
+
+        This is cleanup, and it runs in a ``finally`` after every SSID. A dead
+        session here used to replace a real result — "5 of 6 SSIDs worked" — with
+        an SSH error from ``ip addr flush``, losing the finding the test had
+        just produced. The session is reconnected and the teardown retried, and
+        if it still fails the error is logged rather than raised.
+        """
+        commands = [
+            "pkill -f 'wpa_supplicant.*regression_wpa' || true",
+            "pkill -f 'wpa_supplicant.*regression' || true",
+            *[f"pkill -f '{c}.*{self.iface}' || true" for c in DHCP_CLIENTS],
+            f"ip addr flush dev {self.iface} || true",
+        ]
+        for command in commands:
+            for attempt in range(2):
+                try:
+                    self.ssh.run(command, sudo=True)
+                    break
+                except SSHError as exc:
+                    if attempt:
+                        log.warning("Station teardown step failed: %s (%s)",
+                                    command, exc)
+                    else:
+                        self.ssh.close()
         self._current = None
         time.sleep(1)
 
@@ -699,9 +927,56 @@ class Station:
     # ── Verification helpers ─────────────────────────────────────────────────
 
     def scan(self, timeout: int = 30) -> list[ScanResult]:
-        self.ssh.run(f"ip link set {self.iface} up", sudo=True)
-        out = self.ssh.run(f"iw dev {self.iface} scan", sudo=True, timeout=timeout).stdout
-        return _parse_iw_scan(out)
+        """
+        A full scan from the station.
+
+        Retried once on a transport error: a scan takes tens of seconds and the
+        session can be reaped underneath it, which surfaced as an SSH failure in
+        the middle of diagnosing an unrelated association problem. Scanning
+        changes nothing, so running it again is free of side effects.
+        """
+        for attempt in range(2):
+            try:
+                self.ssh.run(f"ip link set {self.iface} up", sudo=True)
+                out = self.ssh.run(
+                    f"iw dev {self.iface} scan", sudo=True, timeout=timeout
+                ).stdout
+                return _parse_iw_scan(out)
+            except SSHError as exc:
+                if attempt:
+                    raise
+                log.warning("Scan on %s failed (%s); reconnecting and retrying",
+                            self.iface, exc)
+                self.ssh.close()
+        return []
+
+    def visible_ssids(self, expected: set[str], *, retries: int = 4,
+                      delay: int = 4) -> set[str]:
+        """
+        Which of *expected* this station can actually hear, over several scans.
+
+        The AP reporting a BSS and that BSS beaconing are different claims.
+        hostapd answers ``status`` for an interface it has configured even when
+        it never brought it on air — a WPA1/TKIP SSID does exactly that here,
+        because TKIP cannot coexist with the HT rates the radio is running. The
+        AP-side check passed, the SSID was invisible to every scan, and the run
+        failed several steps later with "did not associate", pointing at the
+        client instead of at the SSID that was never there.
+
+        Scans are repeated because a single one often misses a freshly started
+        BSS; each round accumulates, so a BSS seen once counts as present.
+        """
+        found: set[str] = set()
+        for attempt in range(retries):
+            try:
+                found |= {r.ssid for r in self.scan()} & expected
+            except SSHError as exc:
+                log.debug("scan attempt %s failed: %s", attempt + 1, exc)
+            if found >= expected:
+                return found
+            if attempt < retries - 1:
+                time.sleep(delay)
+        return found
 
     def scan_for(self, ssid: str, *, retries: int = 3) -> list[ScanResult]:
         """Scan repeatedly for one SSID — a single scan often misses a new BSS."""
@@ -731,6 +1006,118 @@ class Station:
             timeout=timeout,
         )
         return _parse_ping(res.stdout)
+
+    # The AP's portal (uspot) serves these from its own uhttpd; an
+    # unauthenticated client's port 80 is DNATed to it, so any HTTP URL reaches
+    # it. The form fields come from the pages it serves.
+    PORTAL_PATH = "/hotspot"
+    PORTAL_PROBE = "http://connectivitycheck.gstatic.com/generate_204"
+
+    def _portal_host(self) -> str:
+        """
+        Where to reach the portal when the redirect did not tell us.
+
+        The client's default gateway is the AP, and an unauthenticated client's
+        port 80 is redirected to the portal, so this reaches the handler
+        without depending on DNS or on the probe having answered at all.
+        """
+        route = self.ssh.run(
+            f"ip route show table {self.WIFI_TABLE} 2>/dev/null | "
+            f"grep default | head -1", sudo=True,
+        ).stdout.strip()
+        if len(route.split()) > 2:
+            return route.split()[2]
+        ip = self.current_ip()
+        return ".".join(ip.split(".")[:3]) + ".1" if ip else "192.168.1.1"
+
+    def captive_portal_present(self, timeout: int = 15) -> bool:
+        """
+        True if something is intercepting HTTP.
+
+        ``generate_204`` answers 204 with no body on an open network. Anything
+        else — a 302, or a 200 carrying a page — means a portal is in the way.
+        """
+        source = self.current_ip() or self.iface
+        res = self.ssh.run(
+            f"curl -s -o /dev/null -w '%{{http_code}}' --interface {source} "
+            f"--max-time {timeout} {shlex.quote(self.PORTAL_PROBE)}",
+            timeout=timeout + 10,
+        )
+        code = res.stdout.strip()
+        return code not in ("204", "")
+
+    def pass_captive_portal(self, auth_mode: str = "", *,
+                            username: str = "", password: str = "",
+                            timeout: int = 20) -> PortalResult:
+        """
+        Do what a person does at the splash page, so the client is authorised.
+
+        The portal is driven from **what it actually serves**, not from what the
+        config declares: fetch the page the redirect leads to, read its form,
+        fill in the fields it asks for, and post it back to its own action URL.
+        Two things make the config an unreliable guide — a portal declared
+        ``uam`` was observed serving a plain click-to-continue form, and the
+        splash lives on the AP's portal address rather than the client's
+        gateway, so the form has to go where the redirect points.
+
+        *auth_mode* is only a hint, used to decide whether credentials are worth
+        supplying and to label the result.
+        """
+        source = self.current_ip() or self.iface
+        base = f"--interface {source} --max-time {timeout} -s"
+
+        splash, final_url = "", ""
+        for _ in range(3):
+            probe = self.ssh.run(
+                f"curl {base} -L -i -w '\\n{_FINAL_URL}%{{url_effective}}\\n' "
+                f"{shlex.quote(self.PORTAL_PROBE)}",
+                timeout=timeout + 15,
+            ).stdout
+            splash, final_url = _split_final_url(probe)
+            if splash.strip():
+                break
+            time.sleep(2)
+
+        # An empty probe means curl never got an answer, and `url_effective` is
+        # then just the URL we asked for. Posting the form there sends it to
+        # connectivitycheck.gstatic.com instead of the portal, which of course
+        # changes nothing. The client's own gateway is the AP, and its port 80
+        # is redirected to the portal, so it is the safe target.
+        if not splash.strip() or not _redirected(final_url):
+            final_url = f"http://{self._portal_host()}{self.PORTAL_PATH}"
+
+        form = _parse_login_form(splash)
+        fields = _fill_login_form(form, username, password) if form else {}
+        note = ""
+        if not fields:
+            # Nothing usable on the page — a custom webroot, or a splash that
+            # builds its form in script. uspot's handler takes the same two
+            # fields whatever the page looks like, so submit those rather than
+            # giving up while still behind the portal.
+            fields = _default_fields(auth_mode, username, password)
+            note = " (page carried no usable form; used uspot's default fields)"
+
+        target = _resolve(final_url, form.action if form else "") or (
+            f"http://{_host_of(final_url)}{self.PORTAL_PATH}"
+        )
+        if not (form and form.action):
+            target = f"http://{_host_of(final_url)}{self.PORTAL_PATH}"
+        body = "&".join(f"{k}={quote_plus(v)}" for k, v in fields.items())
+
+        reply = self.ssh.run(
+            f"curl {base} -i -L -X {form.method if form else 'POST'} -d {shlex.quote(body)} "
+            f"{shlex.quote(target)}",
+            timeout=timeout + 15,
+        ).stdout
+        time.sleep(2)
+
+        return PortalResult(
+            auth_mode=auth_mode or fields.get("action", "unknown"),
+            action=_describe(fields, username) + note,
+            portal_host=_host_of(target), submitted=fields,
+            splash=splash, response=reply,
+            authorised=not self.captive_portal_present(),
+        )
 
     def diagnose_path(self, host: str = "google.com") -> str:
         """
@@ -933,8 +1320,25 @@ def _parse_iw_scan(raw: str) -> list[ScanResult]:
                 signal = float(stripped.split(":", 1)[1].strip().split()[0])
             except (ValueError, IndexError):
                 signal = 0.0
+        elif stripped.startswith("capability:"):
+            # Carries the Privacy bit. A BSS with Privacy set but no WPA/RSN
+            # element is claiming encryption it never describes, and no client
+            # can negotiate a key with it.
+            if "Privacy" in stripped:
+                flags.append("Privacy")
         elif stripped.startswith("RSN:") or stripped.startswith("WPA:"):
             flags.append(stripped.split(":", 1)[0])
+        elif stripped.startswith("HT capabilities:"):
+            flags.append("HT")
+        elif stripped.startswith("VHT capabilities:"):
+            flags.append("VHT")
+        elif stripped.startswith("* Pairwise ciphers:"):
+            # The ciphers matter, not just that the BSS is protected: a
+            # TKIP-only BSS advertising HT is the combination 802.11n
+            # prohibits, and recording only "WPA" hid exactly that.
+            flags.append(stripped.split(":", 1)[1].strip())
+        elif stripped.startswith("* Group cipher:"):
+            flags.append("group " + stripped.split(":", 1)[1].strip())
     flush()
     return results
 

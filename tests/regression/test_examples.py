@@ -105,73 +105,137 @@ def test_example(example_name, band, apply_case, ap, station, capabilities,
                 f"{', '.join(sorted(missing))} configured but not broadcasting"
             )
 
+            # The AP answering for a BSS is not the same as that BSS being on
+            # the air. Confirm from the station, which is the only side that
+            # can tell the difference — and say so here rather than letting it
+            # resurface later as a client that "did not associate".
+            seen = station.visible_ssids(expected)
+            allure.attach(
+                "\n".join(f"{'yes' if s in seen else 'NO '}  {s}"
+                          for s in sorted(expected)),
+                "visible in a station scan", allure.attachment_type.TEXT,
+            )
+            silent = expected - seen
+            assert not silent, (
+                f"{', '.join(sorted(silent))} configured on the AP but not on "
+                f"the air — no beacon reached the station"
+            )
+
     # ── 3. the station can join ──────────────────────────────────────────────
     targets = station_ready_ssids(config, bands=frozenset({band}))
     if not targets:
         allure.dynamic.parameter("client", "no SSID this station can join unaided")
         return
 
-    joined, failed = [], []
-    with allure.step(f"Client connects ({len(targets)} SSID(s))"):
+    # Each SSID is joined and then immediately made to carry traffic, while
+    # that association is the live one. Checking traffic once at the end
+    # instead measured whatever the station happened to be attached to after
+    # the last connect, while reporting the *first* SSID's address — so a
+    # working network could be reported as "got 10.10.100.184 but cannot reach
+    # the internet" when the diagnosis underneath said there was no address at
+    # all. It also matches the rule that every successful connect has to pass
+    # traffic, not just one of them.
+    passed, failed = [], []
+    with allure.step(f"Client joins and passes traffic ({len(targets)} SSID(s))"):
         for ssid in targets:
+            label = f"{ssid.name} ({ssid.proto})"
             try:
-                assoc = station.connect(
-                    ssid.name, ssid.proto,
-                    passphrase=ssid.key or testbed_config.settings.default_passphrase,
-                    timeout=testbed_config.settings.association_timeout,
-                )
-                if not assoc.has_ip:
-                    failed.append(f"{ssid.name} ({ssid.proto}): no DHCP lease")
-                else:
-                    joined.append((ssid, assoc))
-                    allure.attach(
-                        assoc.evidence(), f"{ssid.name} — station evidence",
-                        allure.attachment_type.TEXT,
-                    )
-            except StationError as exc:
-                failed.append(f"{ssid.name} ({ssid.proto}): {_brief(exc)}")
-                allure.attach(
-                    station.supplicant_evidence(),
-                    f"{ssid.name} — wpa_supplicant", allure.attachment_type.TEXT,
-                )
+                with allure.step(label):
+                    _join_and_use(station, ssid, testbed_config)
+                passed.append(ssid.name)
+            except (AssertionError, StationError) as exc:
+                failed.append(f"{label}: {_brief(exc)}")
             finally:
-                if not joined:
-                    station.disconnect()
-        assert joined, "; ".join(failed)
-
-    # ── 4. that client can actually use the network ──────────────────────────
-    ssid, assoc = joined[0]
-    try:
-        with allure.step(f"Client reaches the internet from {assoc.ip}"):
-            ping = station.verify_internet(count=testbed_config.settings.ping_count)
-            allure.attach(
-                f"{ping.received}/{ping.transmitted} replies, "
-                f"{ping.loss_pct:.0f}% loss, avg {ping.rtt_avg_ms} ms",
-                "ping google.com", allure.attachment_type.TEXT,
-            )
-            if not ping.ok:
-                allure.attach(
-                    station.diagnose_path(), "path diagnosis",
-                    allure.attachment_type.TEXT,
-                )
-            assert ping.ok, (
-                f"got {assoc.ip} but cannot reach the internet "
-                f"({ping.received}/{ping.transmitted} replies)"
-            )
-    finally:
-        station.disconnect()
+                station.disconnect()
 
     if failed:
         pytest.fail(
-            f"reached the internet, but {len(failed)} of {len(targets)} SSIDs "
-            f"did not connect\n  " + "\n  ".join(failed)
+            f"{len(passed)} of {len(targets)} SSID(s) worked end to end; "
+            f"{len(failed)} did not\n  " + "\n  ".join(failed)
+        )
+
+
+def _join_and_use(station, ssid, testbed_config) -> None:
+    """
+    Associate to one SSID, clear any portal, and prove it carries traffic.
+
+    Raises with the reason if any of that fails; the caller records it against
+    this SSID. Evidence is attached whether it worked or not, because a
+    successful association is as much a result as a failed one.
+    """
+    try:
+        assoc = station.connect(
+            ssid.name, ssid.proto,
+            passphrase=ssid.key or testbed_config.settings.default_passphrase,
+            timeout=testbed_config.settings.association_timeout,
+        )
+    except StationError:
+        allure.attach(station.supplicant_evidence(),
+                      f"{ssid.name} — wpa_supplicant", allure.attachment_type.TEXT)
+        raise
+
+    allure.attach(assoc.evidence(), f"{ssid.name} — station evidence",
+                  allure.attachment_type.TEXT)
+    assert assoc.has_ip, "associated but DHCP never answered"
+
+    if ssid.has_captive:
+        _pass_the_portal(station, ssid, testbed_config)
+
+    ping = station.verify_internet(count=testbed_config.settings.ping_count)
+    allure.attach(
+        f"{ping.received}/{ping.transmitted} replies, {ping.loss_pct:.0f}% loss, "
+        f"avg {ping.rtt_avg_ms} ms",
+        f"{ssid.name} — ping google.com from {assoc.ip}",
+        allure.attachment_type.TEXT,
+    )
+    if not ping.ok:
+        allure.attach(station.diagnose_path(), f"{ssid.name} — path diagnosis",
+                      allure.attachment_type.TEXT)
+    assert ping.ok, (
+        f"had {assoc.ip} but no traffic "
+        f"({ping.received}/{ping.transmitted} replies)"
+    )
+
+
+def _pass_the_portal(station, ssid, testbed_config) -> None:
+    """
+    Authenticate at the captive portal, the way a guest would.
+
+    Until this happens the AP holds the client in a walled garden, so the
+    internet check that follows would fail for a portal that is working exactly
+    as designed. Credentials come from the config where the portal keeps its own
+    list, and from the testbed otherwise — a ``radius`` or ``uam`` portal
+    validates against a backend, not against anything the config declares.
+    """
+    mode = ssid.captive.get("auth-mode", "click-to-continue")
+    username, password = ssid.portal_login
+    radius = testbed_config.external.radius
+    if mode in ("radius", "uam") and radius:
+        username = username or radius.identity
+        password = password or radius.password
+
+    with allure.step(f"Client passes the {mode} captive portal"):
+        result = station.pass_captive_portal(
+            mode, username=username, password=password,
+        )
+        allure.attach(result.evidence(), f"{ssid.name} — captive portal",
+                      allure.attachment_type.TEXT)
+        assert result.authorised, (
+            f"{mode} portal still intercepting HTTP after {result.action}"
         )
 
 
 def _brief(exc: Exception) -> str:
-    """First meaningful line — station errors carry long scan dumps."""
+    """
+    First meaningful line — station errors carry long scan dumps.
+
+    Long enough to keep the diagnosis. The old 160-character cut removed the
+    part that explained *why* a BSS was never selected, leaving only "was never
+    selected"; the scan dump is still stripped by the markers above it, so the
+    extra room costs nothing.
+    """
     text = str(exc)
     for marker in ("Visible SSIDs:", "\n"):
         if marker in text:
             text = text.split(marker)[0]
-    return text.strip()[:160]
+    return text.strip()[:420]
