@@ -1389,3 +1389,118 @@ def test_the_failure_summary_keeps_the_diagnosis():
     )
     brief = _brief(RuntimeError(msg))
     assert "neither a WPA nor an RSN" in brief
+
+
+# ── a DHCP attempt that cannot complete is a result, not a crash ─────────────
+# Releasing a stale lease occasionally outlasts its own command timeout. Letting
+# that escape aborted the whole case on whichever SSID it landed on, discarding
+# the SSIDs after it — "this one got no lease" is a result the caller already
+# records.
+
+def test_a_dhcp_transport_failure_becomes_no_lease():
+    from framework.clients.rpi5_station import SSHError, Station
+
+    class _SSH:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    station = Station.__new__(Station)
+    station.ssh = _SSH()
+    station.iface = "wlan0"
+    station._request_dhcp = lambda t: (_ for _ in ()).throw(SSHError("PipeTimeout"))
+
+    assert station.request_dhcp() == ""
+    assert station.ssh.closed == 1
+
+
+def test_a_successful_lease_is_returned_unchanged():
+    from framework.clients.rpi5_station import Station
+
+    station = Station.__new__(Station)
+    station.iface = "wlan0"
+    station._request_dhcp = lambda t: "10.10.100.184"
+    assert station.request_dhcp() == "10.10.100.184"
+
+
+# ── the portal probe must not be defeated by DNS, or by silence ──────────────
+# A portal that blocks DNS before authentication kills a name-based probe before
+# it can be redirected: the splash comes back empty, which read as "the portal
+# served nothing" when it means "the request never left". And an empty reply was
+# being treated as "no portal", which is the one wrong answer this check must
+# not give — it turns a dead probe into a pass.
+
+class _ProbeSSH:
+    def __init__(self, codes):
+        self.codes = dict(codes)
+        self.asked = []
+
+    def run(self, command, **kw):
+        url = next((w for w in command.split() if w.startswith("http")), "")
+        url = url.strip("'\"")
+        self.asked.append(url)
+
+        class R:
+            stdout = self.codes.get(url, "")
+        return R()
+
+
+def _presence(codes):
+    from framework.clients.rpi5_station import Station
+
+    station = Station.__new__(Station)
+    station.ssh = _ProbeSSH(codes)
+    station.iface = "wlan0"
+    station.current_ip = lambda: "10.10.100.184"
+    return Station.captive_portal_present(station), station.ssh
+
+
+def test_a_204_from_either_probe_means_no_portal():
+    from framework.clients.rpi5_station import Station
+
+    present, _ = _presence({Station.PORTAL_PROBE: "204"})
+    assert present is False
+
+
+def test_a_named_probe_killed_by_dns_falls_back_to_the_ip_probe():
+    from framework.clients.rpi5_station import Station
+
+    present, ssh = _presence({Station.PORTAL_PROBE: "", Station.PORTAL_PROBE_IP: "204"})
+    assert present is False
+    assert Station.PORTAL_PROBE_IP in ssh.asked, "the IP probe must be tried"
+
+
+def test_silence_from_every_probe_counts_as_still_intercepted():
+    present, ssh = _presence({})
+    assert present is True
+    assert len(ssh.asked) == 2, "both probes must be tried before concluding"
+
+
+def test_a_redirect_still_reads_as_a_portal():
+    from framework.clients.rpi5_station import Station
+
+    present, _ = _presence({Station.PORTAL_PROBE: "302"})
+    assert present is True
+
+
+# ── how long a BSS gets to come up belongs to the AP, not the test ───────────
+# 60s was hard-coded in the test. A MediaTek MT7621 occasionally needs longer,
+# and a healthy SSID was reported as "configured but not broadcasting".
+
+def test_ssid_up_timeout_is_configurable_and_generous_by_default():
+    from framework.config import Settings
+
+    assert Settings().ssid_up_timeout >= 90
+    assert Settings(ssid_up_timeout=200).ssid_up_timeout == 200
+
+
+def test_the_ssid_wait_uses_the_configured_timeout():
+    import inspect
+
+    from tests.regression import test_examples
+
+    src = inspect.getsource(test_examples.test_example)
+    assert "settings.ssid_up_timeout" in src
+    assert "wait_for_ssids(expected, timeout=60)" not in src

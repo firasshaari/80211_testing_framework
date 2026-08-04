@@ -183,6 +183,12 @@ class Settings(BaseModel):
     # comfortably exceed apply_timeout.
     rollback_seconds: int = 300
     wireless_settle_timeout: int = 90
+    # How long a configured SSID gets to start beaconing. `wireless_settle`
+    # only says the radios stopped reporting "pending"; hostapd still has to
+    # bring each BSS up after that, and how long it takes is a property of the
+    # AP, not of the test — a MediaTek MT7621 occasionally needs more than the
+    # 60s this used to hard-code, and reported a healthy SSID as missing.
+    ssid_up_timeout: int = 120
     traffic_duration_s: int = 10
     ping_count: int = 10
     report_dir: str = "reports"

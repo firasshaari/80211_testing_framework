@@ -834,7 +834,24 @@ class Station:
     # ── Addressing ───────────────────────────────────────────────────────────
 
     def request_dhcp(self, timeout: int = 30) -> str:
-        """Obtain a lease with whichever DHCP client this image actually has."""
+        """
+        Obtain a lease with whichever DHCP client this image actually has.
+
+        Returns an empty string rather than raising when the attempt cannot be
+        completed. Releasing a stale lease occasionally outlasts its own command
+        timeout, and letting that escape aborted the whole case on the SSID it
+        happened to hit — even though "this SSID got no lease" is an ordinary
+        result the caller already knows how to record, and the SSIDs after it
+        still deserve to be tried.
+        """
+        try:
+            return self._request_dhcp(timeout)
+        except SSHError as exc:
+            log.warning("DHCP attempt on %s could not complete: %s", self.iface, exc)
+            self.ssh.close()      # whatever state the session is in, start over
+            return ""
+
+    def _request_dhcp(self, timeout: int = 30) -> str:
         client = self._find_dhcp_client()
 
         # Drop any lease held from a previous test before asking for a new one.
@@ -1012,6 +1029,16 @@ class Station:
     # it. The form fields come from the pages it serves.
     PORTAL_PATH = "/hotspot"
     PORTAL_PROBE = "http://connectivitycheck.gstatic.com/generate_204"
+    # Same request with no name to resolve. A portal that blocks DNS before
+    # authentication kills the probe above before it can be redirected, and the
+    # splash comes back empty — which looked like "the portal served nothing"
+    # when it actually means "the request never left". Any address works: the
+    # AP redirects port 80 wherever it is aimed.
+    PORTAL_PROBE_IP = "http://1.1.1.1/generate_204"
+
+    @property
+    def portal_probes(self) -> tuple[str, ...]:
+        return (self.PORTAL_PROBE, self.PORTAL_PROBE_IP)
 
     def _portal_host(self) -> str:
         """
@@ -1036,15 +1063,24 @@ class Station:
 
         ``generate_204`` answers 204 with no body on an open network. Anything
         else — a 302, or a 200 carrying a page — means a portal is in the way.
+
+        Both probes are tried before concluding anything, and *no answer at all*
+        counts as still-intercepted rather than clear. Treating an empty reply
+        as "no portal" turned a probe that never left the client into a pass,
+        which is the one wrong answer this check must not give.
         """
         source = self.current_ip() or self.iface
-        res = self.ssh.run(
-            f"curl -s -o /dev/null -w '%{{http_code}}' --interface {source} "
-            f"--max-time {timeout} {shlex.quote(self.PORTAL_PROBE)}",
-            timeout=timeout + 10,
-        )
-        code = res.stdout.strip()
-        return code not in ("204", "")
+        for url in self.portal_probes:
+            code = self.ssh.run(
+                f"curl -s -o /dev/null -w '%{{http_code}}' --interface {source} "
+                f"--max-time {timeout} {shlex.quote(url)}",
+                timeout=timeout + 10,
+            ).stdout.strip()
+            if code == "204":
+                return False
+            if code:
+                return True
+        return True
 
     def pass_captive_portal(self, auth_mode: str = "", *,
                             username: str = "", password: str = "",
@@ -1067,10 +1103,13 @@ class Station:
         base = f"--interface {source} --max-time {timeout} -s"
 
         splash, final_url = "", ""
-        for _ in range(3):
+        for attempt in range(4):
+            # Alternate the two probes: if DNS is what is blocked, the named
+            # one never answers however many times it is retried.
+            url = self.portal_probes[attempt % len(self.portal_probes)]
             probe = self.ssh.run(
                 f"curl {base} -L -i -w '\\n{_FINAL_URL}%{{url_effective}}\\n' "
-                f"{shlex.quote(self.PORTAL_PROBE)}",
+                f"{shlex.quote(url)}",
                 timeout=timeout + 15,
             ).stdout
             splash, final_url = _split_final_url(probe)

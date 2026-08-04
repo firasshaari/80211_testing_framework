@@ -96,7 +96,9 @@ def test_example(example_name, band, apply_case, ap, station, capabilities,
     }
     if expected:
         with allure.step(f"{len(expected)} SSID(s) come up"):
-            missing = ap.wait_for_ssids(expected, timeout=60)
+            missing = ap.wait_for_ssids(
+                expected, timeout=testbed_config.settings.ssid_up_timeout
+            )
             allure.attach(
                 "\n".join(sorted(expected)), "SSIDs configured",
                 allure.attachment_type.TEXT,

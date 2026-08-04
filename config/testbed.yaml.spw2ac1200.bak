@@ -1,0 +1,59 @@
+# Live bench config. This file is gitignored — safe for credentials.
+#
+# Station details are filled in and verified. The AP block still needs your
+# DUT's address; the framework will skip every test with a clear reason until
+# it is reachable.
+
+testbed:
+  name: bench-rpi5
+  description: RPi5 + Intel BE200 station, direct-SSH AP control
+  operator: firas
+
+ap:
+  host: 10.0.127.220
+  user: root
+  password: openwifi
+  disable_ucentral_agent: true
+  # jffs2reset -y && reboot at the end of a run: clean baseline, and the AP
+  # re-onboards to the controller by itself.
+  cleanup: factory_reset
+
+station:
+  host: 10.0.127.77
+  user: test
+  password: test
+  root_password: test
+  # The onboard Broadcom radio is disabled via dtoverlay=disable-wifi in
+  # /boot/firmware/config.txt, so the BE200 is the only wireless interface and
+  # will come up as wlan0 (not wlan1) once the driver binds to it.
+  iface: wlan0
+  country: US
+
+external:
+  # FreeRADIUS container on the station host (make infra-up).
+  radius:
+    host: 10.0.127.77
+    secret: testing123
+    identity: testuser
+    password: testpass
+    eap_method: PEAP
+    dynamic_vlan: 1000
+  # VLANs the DHCP server serves. Bridged SSIDs are placed on the first of
+  # these so test clients land off the management subnet (10.0.127.x).
+  vlan:
+    ids: [1000, 2000]
+    # Fill in a gateway per VLAN to enable the segmentation assertions —
+    # without one, a test can prove a lease arrived but not that it came from
+    # the right VLAN.
+    gateways: {}
+
+normalization:
+  country: US
+  avoid_dfs: true
+  force_2g_width: 20
+  strict_apply: true
+
+settings:
+  association_timeout: 45
+  apply_timeout: 180
+  report_dir: reports
