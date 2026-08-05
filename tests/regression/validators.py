@@ -312,7 +312,12 @@ def check_radius_accepted(case: Case) -> str:
         )
         return "skipped: RADIUS log unavailable"
 
-    accepts = [ln for ln in log.splitlines() if "Access-Accept" in ln]
+    # FreeRADIUS records a success as "Login OK" in its auth log; the
+    # "Access-Accept" wording only appears in packet-level debug output, so
+    # matching on that alone found nothing on a server that had authenticated
+    # the client perfectly well.
+    accepts = [ln for ln in log.splitlines()
+               if "Access-Accept" in ln or "Login OK" in ln]
     assert accepts, (
         "the client associated but the lab RADIUS server logged no "
         "Access-Accept at all — the AP did not authenticate against it"

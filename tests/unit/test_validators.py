@@ -540,7 +540,9 @@ def test_association_without_any_access_accept_is_caught():
 def test_an_access_accept_for_this_client_passes():
     class _S(_FakeStation):
         def radius_log(self, minutes=5):
-            return "Sent Access-Accept Id 5 to 10.0.127.75 5c:b4:7e:42:98:ca\n"
+            # The real wording from the bench server, MAC in dashed form.
+            return ("Auth: (6) Login OK: [testuser] (from client lab port 1 "
+                    "cli 5C-B4-7E-42-98-CA)\n")
 
     case = _case(
         station=_S(), testbed=_RadiusTestbed(),

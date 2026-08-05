@@ -93,6 +93,12 @@ class RadiusSettings(_EnvExpanding):
     identity: str = "testuser"
     password: str = "testpass"
     eap_method: str = "PEAP"
+    # Certificate identity for EAP-TLS, from infra/pki/make-pki.sh. With these
+    # present the enterprise SSIDs become joinable; without them every RADIUS
+    # example could only ever test its companion PSK SSID.
+    ca_cert: Optional[str] = None
+    client_cert: Optional[str] = None
+    private_key: Optional[str] = None
     # VLAN this server is configured to return for `identity` via
     # Tunnel-Private-Group-Id. Required to test dynamic VLAN assignment: without
     # it there is no way to know which VLAN a successful auth should land in,

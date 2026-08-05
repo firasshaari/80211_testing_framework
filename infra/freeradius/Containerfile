@@ -12,3 +12,8 @@ RUN apt-get update \
 EXPOSE 1812/udp 1813/udp
 # -f foreground, -l stdout so podman captures the log.
 CMD ["freeradius", "-f", "-l", "stdout"]
+
+# Log authentication outcomes. FreeRADIUS keeps `auth = no` by default, so the
+# server's own record of an Access-Accept never appears — and a check that asks
+# "did the backend actually authenticate this station" has nothing to read.
+RUN sed -i 's/^\([[:space:]]*\)auth = no/\1auth = yes/' /etc/freeradius/3.0/radiusd.conf

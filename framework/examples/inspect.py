@@ -132,7 +132,8 @@ def iter_ssids(config: dict) -> list[SSIDSpec]:
     return [s for iface in iter_interfaces(config) for s in iface.ssids]
 
 
-def station_ready_ssids(config: dict, *, bands: frozenset[str] | None = None) -> list[SSIDSpec]:
+def station_ready_ssids(config: dict, *, bands: frozenset[str] | None = None,
+                        enterprise: bool = False) -> list[SSIDSpec]:
     """
     SSIDs the station can associate to using only what the config declares.
 
@@ -142,7 +143,12 @@ def station_ready_ssids(config: dict, *, bands: frozenset[str] | None = None) ->
     """
     out = []
     for ssid in iter_ssids(config):
-        if not ssid.station_ready or ssid.bss_mode != "ap":
+        # Enterprise SSIDs are joinable only when the bench holds an identity
+        # for them. With the PKI in infra/pki deployed that is now true, and
+        # excluding them meant every RADIUS example tested only its companion
+        # PSK SSID — the enterprise path was never exercised at all.
+        joinable = ssid.station_ready or (enterprise and ssid.enterprise)
+        if not joinable or ssid.bss_mode != "ap":
             continue
         if bands is not None and ssid.bands and not (set(ssid.bands) & set(bands)):
             continue

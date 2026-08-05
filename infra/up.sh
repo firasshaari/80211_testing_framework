@@ -25,9 +25,18 @@ podman image exists localhost/bench-freeradius || \
 sed "s/@SECRET@/$RADIUS_SECRET/g" "$INFRA/freeradius/clients.conf.tmpl" \
   > "$INFRA/freeradius/clients.conf"
 
+# EAP-TLS needs a certificate chain both ends trust. The bench issues its own
+# rather than depending on anything outside the lab; regenerate at any time.
+if [ ! -f "$INFRA/pki/out/server.pem" ]; then
+  echo "generating the bench PKI"
+  sh "$INFRA/pki/make-pki.sh" "$INFRA/pki/out"
+fi
+
 podman run -d --name radius --network host --restart no \
   -v "$INFRA/freeradius/clients.conf":/etc/freeradius/3.0/clients.conf:ro,z \
   -v "$INFRA/freeradius/authorize":/etc/freeradius/3.0/mods-config/files/authorize:ro,z \
+  -v "$INFRA/freeradius/eap":/etc/freeradius/3.0/mods-enabled/eap:ro,z \
+  -v "$INFRA/pki/out":/etc/freeradius/3.0/certs:ro,z \
   localhost/bench-freeradius
 
 sleep 3

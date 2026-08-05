@@ -320,6 +320,7 @@ def build_network_block(
     eap_method: str = "PEAP",
     phase2: str = "auth=MSCHAPV2",
     bssid: str | None = None,
+    certificates: dict | None = None,
 ) -> str:
     """Render the ``network={...}`` block for a uCentral encryption proto."""
     proto = (proto or "none").lower()
@@ -369,13 +370,38 @@ def build_network_block(
         psk()
 
     elif proto in ("wpa", "wpa-mixed", "wpa2", "wpa2-radius", "wpa3"):  # enterprise
-        if not identity or eap_password is None:
-            raise StationError(f"proto {proto!r} needs identity and eap_password")
         mgmt = "WPA-EAP-SHA256 WPA-EAP" if proto == "wpa3" else "WPA-EAP"
         lines += [f"key_mgmt={mgmt}", f"eap={eap_method}"]
-        lines += [f'identity="{identity}"', f'password="{eap_password}"']
-        if eap_method.upper() in ("PEAP", "TTLS"):
-            lines.append(f'phase2="{phase2}"')
+
+        if eap_method.upper() == "TLS":
+            # Certificate identity. The bench issues its own chain (see
+            # infra/pki), which is what makes the enterprise SSIDs testable at
+            # all — there is no password to fall back on, so the client is
+            # proving possession of a key the lab CA signed.
+            if not certificates:
+                raise StationError(
+                    "EAP-TLS needs ca_cert/client_cert/private_key on the "
+                    "station — run infra/pki/make-pki.sh and deploy them"
+                )
+            lines.append(f'identity="{identity or "testuser"}"')
+            lines += [
+                f'ca_cert="{certificates["ca_cert"]}"',
+                f'client_cert="{certificates["client_cert"]}"',
+                f'private_key="{certificates["private_key"]}"',
+            ]
+            if certificates.get("private_key_passwd"):
+                lines.append(
+                    f'private_key_passwd="{certificates["private_key_passwd"]}"'
+                )
+        else:
+            if not identity or eap_password is None:
+                raise StationError(
+                    f"proto {proto!r} with {eap_method} needs identity and "
+                    f"eap_password"
+                )
+            lines += [f'identity="{identity}"', f'password="{eap_password}"']
+            if eap_method.upper() in ("PEAP", "TTLS"):
+                lines.append(f'phase2="{phase2}"')
         if proto == "wpa3":
             lines.append("ieee80211w=2")
         elif proto == "wpa":
@@ -639,6 +665,7 @@ class Station:
         identity: str | None = None,
         eap_password: str | None = None,
         eap_method: str = "PEAP",
+        certificates: dict | None = None,
         timeout: int = 45,
         dhcp: bool = True,
     ) -> Association:
@@ -657,6 +684,7 @@ class Station:
             identity=identity,
             eap_password=eap_password,
             eap_method=eap_method,
+            certificates=certificates,
         )
         conf = textwrap.dedent(
             f"""\

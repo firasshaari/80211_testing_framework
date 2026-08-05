@@ -57,3 +57,6 @@ infra/infra.env
 # Generated Allure artefacts (results are produced by a run, reports by the CLI)
 allure-results*/
 allure-report*/
+
+# Bench PKI: generated locally, never committed.
+infra/pki/out/

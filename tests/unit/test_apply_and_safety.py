@@ -1504,3 +1504,61 @@ def test_the_ssid_wait_uses_the_configured_timeout():
     src = inspect.getsource(test_examples.test_example)
     assert "settings.ssid_up_timeout" in src
     assert "wait_for_ssids(expected, timeout=60)" not in src
+
+
+# ── EAP-TLS: a certificate identity for the enterprise SSIDs ─────────────────
+# Enterprise SSIDs cannot be joined with a passphrase, so without a certificate
+# identity every one of them was skipped. The bench issues its own chain.
+
+CERTS = {
+    "ca_cert": "/etc/regression-pki/ca.pem",
+    "client_cert": "/etc/regression-pki/client.pem",
+    "private_key": "/etc/regression-pki/client.key",
+}
+
+
+def test_eap_tls_block_carries_the_certificate_chain():
+    from framework.clients.rpi5_station import build_network_block
+
+    block = build_network_block(
+        "ap-wpa2", "wpa2", eap_method="TLS", identity="testuser",
+        certificates=CERTS,
+    )
+    assert "key_mgmt=WPA-EAP" in block
+    assert "eap=TLS" in block
+    assert 'ca_cert="/etc/regression-pki/ca.pem"' in block
+    assert 'client_cert="/etc/regression-pki/client.pem"' in block
+    assert 'private_key="/etc/regression-pki/client.key"' in block
+    # No password anywhere: possession of the key is the proof.
+    assert "password=" not in block
+
+
+def test_eap_tls_without_certificates_says_what_to_do():
+    from framework.clients.rpi5_station import StationError, build_network_block
+
+    with pytest.raises(StationError, match="make-pki.sh"):
+        build_network_block("ap-wpa2", "wpa2", eap_method="TLS", identity="u")
+
+
+def test_peap_still_uses_a_password_identity():
+    """The password accounts must keep working alongside EAP-TLS."""
+    from framework.clients.rpi5_station import build_network_block
+
+    block = build_network_block(
+        "ap-wpa2", "wpa2", eap_method="PEAP", identity="testuser",
+        eap_password="testpass",
+    )
+    assert "eap=PEAP" in block
+    assert 'password="testpass"' in block
+    assert 'phase2="auth=MSCHAPV2"' in block
+    assert "client_cert" not in block
+
+
+def test_a_key_password_is_included_when_the_bundle_has_one():
+    from framework.clients.rpi5_station import build_network_block
+
+    block = build_network_block(
+        "ap-wpa2", "wpa2", eap_method="TLS", identity="testuser",
+        certificates={**CERTS, "private_key_passwd": "whatever"},
+    )
+    assert 'private_key_passwd="whatever"' in block
