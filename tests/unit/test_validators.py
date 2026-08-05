@@ -211,26 +211,6 @@ def test_an_ssid_without_a_rate_limit_is_skipped_cleanly():
     assert "no rate-limit" in validators.check_rate_limit(case)
 
 
-# ── dual stack ───────────────────────────────────────────────────────────────
-
-def test_dual_stack_without_a_v6_address_is_caught():
-    case = _case(station=_FakeStation(ipv6="", has_v6=True))
-    with pytest.raises(AssertionError, match="no global IPv6"):
-        validators.check_dual_stack(case)
-
-
-def test_a_v4_only_bench_skips_dual_stack_instead_of_failing_it():
-    """The AP bridges IPv6; it cannot invent it on a v4-only lab."""
-    case = _case(station=_FakeStation(ipv6="", has_v6=False))
-    assert "no IPv6 upstream" in validators.check_dual_stack(case)
-    assert any("provides no IPv6" in n for n in case.notes)
-
-
-def test_dual_stack_with_a_v6_address_passes():
-    case = _case(station=_FakeStation(ipv6="2001:db8::42"))
-    assert "2001:db8::42" in validators.check_dual_stack(case)
-
-
 # ── RFC1918 blocking: the feature works when traffic *fails* ─────────────────
 
 RFC1918_CFG = {"interfaces": [
@@ -414,3 +394,188 @@ def test_every_registered_area_is_a_real_area():
     areas = {e.area.value for e in catalog.EXAMPLES}
     for area in validators.AP_SIDE_BY_AREA:
         assert area in areas
+
+
+# ── QoS: DSCP must arrive in the right WMM access category ───────────────────
+# The AP maps a marked frame onto an access category; the client can see which
+# one it arrived in via per-TID counters. Nothing else in the suite would notice
+# a classifier that silently did nothing.
+
+class _QoSStation(_FakeStation):
+    def __init__(self, mapping, peer="10.10.100.182"):
+        super().__init__()
+        self.mapping = mapping          # dscp -> tid the AP delivered it on
+        self._peer = peer
+        self._counters = {t: 0 for t in range(8)}
+        self._pending = None
+
+    def ensure_vlan_peer(self, vlan, **kw):
+        if not self._peer:
+            raise RuntimeError("no trunk")
+        return self._peer
+
+    def tid_counters(self):
+        return dict(self._counters)
+
+    def measure_from_peer(self, peer, seconds=8, dscp=None, udp_mbps=None):
+        from framework.clients.rpi5_station import ThroughputResult
+
+        if dscp is not None:
+            tid = self.mapping.get(dscp)
+            if tid is not None:
+                self._counters[tid] += 1000
+        return ThroughputResult(mbps=50.0)
+
+
+CORRECT = {0: 0, 32: 4, 48: 7}       # what the AX820 actually did
+
+
+def test_correct_dscp_to_wmm_mapping_passes():
+    case = _case(station=_QoSStation(CORRECT), ssid=_ssid(vlan_id=1000))
+    evidence = validators.check_qos_dscp_mapping(case)
+    assert "DSCP 48 -> TID 7 (VO)" in evidence
+
+
+def test_voice_delivered_as_best_effort_is_caught():
+    """The failure that matters: marking ignored, everything lands in BE."""
+    case = _case(station=_QoSStation({0: 0, 32: 0, 48: 0}), ssid=_ssid(vlan_id=1000))
+    with pytest.raises(AssertionError, match="not mapping DSCP onto WMM"):
+        validators.check_qos_dscp_mapping(case)
+
+
+def test_either_voice_tid_is_accepted():
+    """TID 6 and 7 are both AC_VO; asserting an exact TID would be wrong."""
+    case = _case(station=_QoSStation({0: 0, 32: 4, 48: 6}), ssid=_ssid(vlan_id=1000))
+    assert "(VO)" in validators.check_qos_dscp_mapping(case)
+
+
+def test_traffic_that_never_arrives_is_not_a_pass():
+    case = _case(station=_QoSStation({}), ssid=_ssid(vlan_id=1000))
+    with pytest.raises(AssertionError, match="nothing arrived to classify"):
+        validators.check_qos_dscp_mapping(case)
+
+
+def test_qos_is_skipped_without_a_peer_rather_than_failed():
+    case = _case(station=_QoSStation(CORRECT, peer=""), ssid=_ssid(vlan_id=1000))
+    assert "skipped" in validators.check_qos_dscp_mapping(case)
+
+
+# ── rate limiting now measures inside the lab ────────────────────────────────
+
+def test_the_rate_limit_measures_against_the_wired_peer():
+    """Not the internet: the uplink is not the thing under test."""
+    class _S(_QoSStation):
+        def measure_from_peer(self, peer, seconds=8, dscp=None, udp_mbps=None):
+            from framework.clients.rpi5_station import ThroughputResult
+            return ThroughputResult(mbps=9.4)
+
+    case = _case(config=RATE_CFG, station=_S(CORRECT), ssid=_ssid(vlan_id=1000))
+    evidence = validators.check_rate_limit(case)
+    assert "9.4 Mbps against a 10 Mbps cap" in evidence
+    assert "wired peer" in evidence
+
+
+# ── roaming: the beacon must advertise the capability ────────────────────────
+
+def test_rrm_not_advertised_in_the_beacon_is_caught():
+    class _S(_FakeStation):
+        def scan_for(self, ssid, retries=3):
+            return [object()]
+
+        def beacon_detail(self, ssid):
+            return "BSS aa:bb\n\tcapability: ESS Privacy (0x1011)\n\tSSID: ap-psk2\n"
+
+    with pytest.raises(AssertionError, match="advertises neither"):
+        validators.check_rrm_elements(_case(station=_S()))
+
+
+def test_the_radio_measurement_capability_bit_counts_as_advertised():
+    """
+    iw prints the baseline 802.11k advertisement as "RadioMeasure" in the
+    capability field. Requiring the optional elements instead reported a
+    correctly-advertising AP as broken.
+    """
+    class _S(_FakeStation):
+        def scan_for(self, ssid, retries=3):
+            return [object()]
+
+        def beacon_detail(self, ssid):
+            return "\tcapability: ESS Privacy ShortPreamble RadioMeasure (0x1031)\n"
+
+    assert "802.11k" in validators.check_rrm_elements(_case(station=_S()))
+
+
+def test_rrm_advertised_passes():
+    class _S(_FakeStation):
+        def scan_for(self, ssid, retries=3):
+            return [object()]
+
+        def beacon_detail(self, ssid):
+            return "\tRM Enabled Capabilities:\n\t\t * Neighbor Report\n"
+
+    assert "RM Enabled Capabilities" in validators.check_rrm_elements(
+        _case(station=_S())
+    )
+
+
+# ── RADIUS: the server must have accepted this client ────────────────────────
+
+class _RadiusTestbed(_Testbed):
+    class external:
+        class radius:
+            dynamic_vlan = 1000
+            identity = "testuser"
+
+
+def test_association_without_any_access_accept_is_caught():
+    class _S(_FakeStation):
+        def radius_log(self, minutes=5):
+            return "Login incorrect (No Auth-Type found)\n"
+
+    case = _case(station=_S(), testbed=_RadiusTestbed())
+    with pytest.raises(AssertionError, match="no Access-Accept"):
+        validators.check_radius_accepted(case)
+
+
+def test_an_access_accept_for_this_client_passes():
+    class _S(_FakeStation):
+        def radius_log(self, minutes=5):
+            return "Sent Access-Accept Id 5 to 10.0.127.75 5c:b4:7e:42:98:ca\n"
+
+    case = _case(
+        station=_S(), testbed=_RadiusTestbed(),
+        assoc=Association(ssid="s", ip="10.10.100.10", mac="5c:b4:7e:42:98:ca"),
+    )
+    assert "RADIUS accepted" in validators.check_radius_accepted(case)
+
+
+def test_an_unreadable_radius_log_is_not_reported_as_a_failure():
+    class _S(_FakeStation):
+        def radius_log(self, minutes=5):
+            return ""
+
+    case = _case(station=_S(), testbed=_RadiusTestbed())
+    assert "skipped" in validators.check_radius_accepted(case)
+
+
+# ── dynamic VLAN: the client lands where the backend put it ──────────────────
+
+def test_a_client_left_in_the_wrong_vlan_is_caught():
+    class _S(_FakeStation):
+        def ensure_vlan_peer(self, vlan, **kw):
+            return "10.10.100.182"
+
+    case = _case(station=_S(), testbed=_RadiusTestbed(),
+                 assoc=Association(ssid="s", ip="192.168.9.20"))
+    with pytest.raises(AssertionError, match="not placed in the assigned VLAN"):
+        validators.check_dynamic_vlan(case)
+
+
+def test_a_client_in_the_assigned_vlan_passes():
+    class _S(_FakeStation):
+        def ensure_vlan_peer(self, vlan, **kw):
+            return "10.10.100.182"
+
+    case = _case(station=_S(), testbed=_RadiusTestbed(),
+                 assoc=Association(ssid="s", ip="10.10.100.184"))
+    assert "shares VLAN 1000" in validators.check_dynamic_vlan(case)

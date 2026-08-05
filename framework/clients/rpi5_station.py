@@ -21,6 +21,7 @@ blocks.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
@@ -1249,25 +1250,179 @@ class Station:
             log.warning("Download measurement returned %r", raw[:80])
             return 0.0
 
-    def global_ipv6(self) -> str:
-        """The interface's global (non link-local) IPv6 address, if it has one."""
+    # ── the station as the traffic source of truth ───────────────────────────
+    # Measuring against the internet makes every result depend on the uplink and
+    # on somebody else's server. The station host can be both ends instead — but
+    # only if the kernel is prevented from short-circuiting it. A tagged VLAN
+    # subinterface on eth0 and the wireless interface are both local, so the
+    # kernel would route between them internally and nothing would ever touch
+    # the air; the measurement would say the link is perfect no matter what the
+    # AP does. Putting the wired end in its own network namespace removes that
+    # shortcut: the namespace has no route to the wireless address, so packets
+    # leave on eth0 tagged, cross the switch, come back over the air through the
+    # AP, and the AP's shaping and QoS act on them exactly as they would for a
+    # real peer.
+    PEER_NS = "wifipeer"
+
+    def ensure_vlan_peer(self, vlan_id: int, *, iface: str = "eth0",
+                         timeout: int = 60) -> str:
+        """
+        Bring up (idempotently) a wired peer on *vlan_id* and return its address.
+
+        The peer takes a DHCP lease from the same server the wireless client
+        uses, so both ends sit on the VLAN under test. The lease here is short,
+        so the client is left running to renew it — a one-shot client loses the
+        address a few seconds later and the peer silently disappears.
+        """
+        existing = self.vlan_peer_address(vlan_id)
+        if existing:
+            return existing
+
+        ns, dev = self.PEER_NS, f"{iface}.{vlan_id}"
+        # Delete the namespace before creating the device. A VLAN subinterface
+        # that already lives inside *any* namespace still owns the name, and
+        # `ip link del` in the default namespace cannot see it — so the add
+        # fails with "File exists" and the peer never appears. Removing the
+        # namespace takes its devices with it.
+        for command in (
+            # A namespace outlives `ip netns del` for as long as any process is
+            # still inside it — the name goes, the namespace and its devices do
+            # not. A daemonised iperf3 server left behind by an earlier run kept
+            # the tagged device alive that way, and every later attempt to
+            # create it failed with "8021q: VLAN device already exists" while
+            # `ip link show` insisted it did not exist. Clear the occupants
+            # first, and the namespace really does go.
+            f"pkill -f 'dhclient.*{iface}\\.{vlan_id}' || true",
+            "pkill -f 'iperf3 -s' || true",
+            f"ip netns del {ns} 2>/dev/null || true",
+            f"ip link del {dev} 2>/dev/null || true",
+            f"ip netns add {ns}",
+            f"ip link add link {iface} name {dev} type vlan id {vlan_id}",
+            f"ip link set {dev} netns {ns}",
+            f"ip netns exec {ns} ip link set lo up",
+            f"ip netns exec {ns} ip link set {dev} up",
+        ):
+            self.ssh.run(command, sudo=True, timeout=30)
+
+        self.ssh.run(
+            f"sh -c 'ip netns exec {ns} dhclient -nw {dev}'", sudo=True, timeout=timeout
+        )
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            address = self.vlan_peer_address(vlan_id)
+            if address:
+                log.info("VLAN %s peer up at %s in namespace %s", vlan_id, address, ns)
+                return address
+            time.sleep(2)
+        raise StationError(
+            f"VLAN {vlan_id} peer never got a lease on {dev}. The switch port "
+            f"must trunk VLAN {vlan_id} tagged to the station, and the DHCP "
+            f"server must serve it."
+        )
+
+    def vlan_peer_address(self, vlan_id: int, *, iface: str = "eth0") -> str:
         out = self.ssh.run(
-            f"ip -6 -br addr show dev {self.iface} scope global", sudo=True
+            f"ip netns exec {self.PEER_NS} ip -4 -br addr show {iface}.{vlan_id} "
+            f"2>/dev/null", sudo=True,
         ).stdout
-        m = re.search(r"([0-9a-fA-F:]+)/\d+", out)
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+)/\d+", out)
         return m.group(1) if m else ""
 
-    def lab_has_ipv6(self) -> bool:
-        """
-        Whether this bench has any IPv6 upstream at all.
+    def teardown_vlan_peer(self) -> None:
+        """Remove the peer, occupants first — see :meth:`ensure_vlan_peer`."""
+        self.ssh.run("pkill -f 'iperf3 -s' || true", sudo=True)
+        self.ssh.run("pkill -f 'dhclient.*\\.[0-9]*$' || true", sudo=True)
+        self.ssh.run(f"ip netns del {self.PEER_NS} 2>/dev/null || true", sudo=True)
 
-        An AP in bridge mode forwards the upstream network's router
-        advertisements rather than sourcing IPv6 itself, so on a v4-only bench
-        no config can give a client a v6 address. Without this, a dual-stack
-        check reports the lab's own gap as an AP fault.
+    def _peer(self, command: str, **kw):
+        return self.ssh.run(
+            f"ip netns exec {self.PEER_NS} {command}", sudo=True, **kw
+        )
+
+    def measure_from_peer(self, peer_ip: str, *, seconds: int = 8,
+                          dscp: int | None = None, udp_mbps: int | None = None
+                          ) -> ThroughputResult:
         """
-        route = self.ssh.run("ip -6 route show default", sudo=True).stdout.strip()
-        return bool(route)
+        Throughput measured over the air, with the wired peer as the sender.
+
+        The peer sends and the station receives, which is the direction an AP's
+        downstream shaping and its DSCP-to-WMM mapping act on. iperf3 runs its
+        server on the wireless side so the peer's own socket options — the DSCP
+        mark in particular — are the ones on the wire.
+        """
+        source = self.current_ip()
+        if not source:
+            raise StationError("station has no wireless address to measure on")
+
+        self.ssh.run("pkill -f 'iperf3 -s' || true", sudo=True)
+        # Detached *and* with its descriptors closed. A backgrounded process
+        # that inherits the SSH channel's stdout keeps that channel open, so the
+        # command never returns and the whole measurement times out.
+        self.ssh.run(
+            f"sh -c 'setsid iperf3 -s -B {source} -1 --logfile "
+            f"/tmp/iperf3-sta.log </dev/null >/dev/null 2>&1 &'",
+            sudo=True, timeout=30,
+        )
+        time.sleep(2)
+
+        flags = f"-c {source} -t {seconds} -J"
+        if dscp is not None:
+            # iperf3 takes the full TOS byte; DSCP occupies the top six bits.
+            flags += f" -S {dscp << 2}"
+        if udp_mbps is not None:
+            flags += f" -u -b {udp_mbps}M"
+        raw = self._peer(f"iperf3 {flags}", timeout=seconds + 45).stdout
+
+        mbps = _parse_iperf3_mbps(raw)
+        return ThroughputResult(
+            mbps=mbps, direction="downstream",
+            protocol="udp" if udp_mbps else "tcp",
+            duration_s=seconds, raw={"dscp": dscp},
+        )
+
+    def beacon_detail(self, ssid: str) -> str:
+        """
+        The raw scan block for one SSID, information elements and all.
+
+        Capability elements — RM Enabled Capabilities for 802.11k, BSS
+        Transition for 802.11v — only exist in the beacon, so this is the only
+        place a client can confirm the AP is advertising them at all.
+        """
+        raw = self.ssh.run(
+            f"iw dev {self.iface} scan", sudo=True, timeout=60
+        ).stdout
+        for block in raw.split("BSS ")[1:]:
+            if f"SSID: {ssid}\n" in block:
+                return "BSS " + block
+        return ""
+
+    def radius_log(self, minutes: int = 5) -> str:
+        """
+        Recent output from the lab RADIUS container, which runs on this host.
+
+        Empty when the container is not present — the caller should treat that
+        as "cannot confirm", not as "authentication failed".
+        """
+        out = self.ssh.run(
+            f"podman logs --since {minutes}m radius 2>&1 | tail -80",
+            sudo=True, timeout=60,
+        ).stdout
+        return "" if "no such container" in out.lower() else out
+
+    def tid_counters(self) -> dict[int, int]:
+        """
+        Received MSDUs per traffic identifier, from the station's own link.
+
+        ``iw station dump -v`` reports these per TID, and TID maps onto the WMM
+        access category (0,3 -> BE, 1,2 -> BK, 4,5 -> VI, 6,7 -> VO). Comparing
+        counters before and after a marked flow shows which category the AP
+        actually delivered it in — the client-side truth about QoS, rather than
+        the AP's opinion of its own classifier.
+        """
+        out = self.ssh.run(
+            f"iw dev {self.iface} station dump -v", sudo=True, timeout=45
+        ).stdout
+        return _parse_tid_stats(out)
 
     def verify_internet(self, host: str = "google.com", count: int = 5,
                         timeout: int = 40) -> PingResult:
@@ -1432,6 +1587,48 @@ def _parse_iw_scan(raw: str) -> list[ScanResult]:
             flags.append("group " + stripped.split(":", 1)[1].strip())
     flush()
     return results
+
+
+def _parse_iperf3_mbps(raw: str) -> float:
+    """
+    Receiver-side bits/second from iperf3's JSON summary.
+
+    The receiver's number is the one that matters: the sender reports what it
+    handed to the kernel, which on a shaped link is not what arrived.
+    """
+    try:
+        report = json.loads(raw)
+    except (ValueError, TypeError):
+        return 0.0
+    end = report.get("end") or {}
+    for key in ("sum_received", "sum"):
+        summary = end.get(key)
+        if isinstance(summary, dict) and summary.get("bits_per_second"):
+            return float(summary["bits_per_second"]) / 1e6
+    return 0.0
+
+
+# TID to WMM access category. The mapping is fixed by 802.11e, and it is what
+# makes a per-TID counter meaningful as a QoS result.
+TID_TO_AC = {0: "BE", 3: "BE", 1: "BK", 2: "BK", 4: "VI", 5: "VI", 6: "VO", 7: "VO"}
+
+
+def _parse_tid_stats(raw: str) -> dict[int, int]:
+    """Per-TID received MSDU counts out of ``iw station dump -v``."""
+    counters: dict[int, int] = {}
+    in_table = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("TID") and "rx" in stripped:
+            in_table = True
+            continue
+        if in_table:
+            fields = stripped.split()
+            if len(fields) >= 2 and fields[0].isdigit() and fields[1].isdigit():
+                counters[int(fields[0])] = int(fields[1])
+            elif fields and not fields[0].isdigit():
+                in_table = False
+    return counters
 
 
 def _parse_ping(raw: str) -> PingResult:
