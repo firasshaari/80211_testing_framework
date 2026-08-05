@@ -581,3 +581,108 @@ def test_a_client_in_the_assigned_vlan_passes():
     case = _case(station=_S(), testbed=_RadiusTestbed(),
                  assoc=Association(ssid="s", ip="10.10.100.184"))
     assert "shares VLAN 1000" in validators.check_dynamic_vlan(case)
+
+
+# ── the radio must land where the config put it ──────────────────────────────
+# `strict` prevents a silent clamp at render time; it says nothing about where
+# the radio ended up. A radio that fell back to ACS still serves clients, so
+# every other check passes while the case stops testing its band plan.
+
+RADIO_CFG = {"radios": [{"band": "5G", "channel": 36, "channel-mode": "HE",
+                         "channel-width": 20, "country": "US"}]}
+
+
+class _RadioAP(_FakeAP):
+    def __init__(self, htmode="HE20", uci=None):
+        super().__init__(uci=uci or {"wireless": "wireless.radio0.country='US'"})
+        self._htmode = htmode
+
+    def iwinfo(self):
+        return (f"wlan0     ESSID: \"ap-psk2\"\n"
+                f"          Mode: Master  Channel: 36 (5.180 GHz)  "
+                f"HT Mode: {self._htmode}\n")
+
+
+def _radio_case(freq=5180, htmode="HE20", **kw):
+    return _case(config=RADIO_CFG, band="5G", ap=_RadioAP(htmode),
+                 assoc=Association(ssid="ap-psk2", ip="10.10.100.10",
+                                   freq_mhz=freq), **kw)
+
+
+def test_a_radio_on_the_configured_channel_and_width_passes():
+    assert "HE20" in validators.check_radio_settings(_radio_case())
+
+
+def test_a_radio_that_drifted_to_another_channel_is_caught():
+    with pytest.raises(AssertionError, match="associated on channel 44"):
+        validators.check_radio_settings(_radio_case(freq=5220))
+
+
+def test_a_width_that_did_not_take_is_caught():
+    """80 MHz asked for, 20 delivered — invisible to a ping test."""
+    with pytest.raises(AssertionError, match="channel-width"):
+        validators.check_radio_settings(_radio_case(htmode="HE80"))
+
+
+def test_a_mode_that_fell_back_is_caught():
+    with pytest.raises(AssertionError, match="channel-mode HE"):
+        validators.check_radio_settings(_radio_case(htmode="VHT20"))
+
+
+def test_a_band_the_config_does_not_declare_is_skipped():
+    case = _case(config=RADIO_CFG, band="2G", ap=_RadioAP())
+    assert "declares no 2G radio" in validators.check_radio_settings(case)
+
+
+# ── regulatory domain ────────────────────────────────────────────────────────
+# Every example ships CA and normalization rewrites it. If that never reached
+# the radio the AP is transmitting under the wrong rules.
+
+def test_the_configured_country_must_reach_the_radio():
+    case = _case(config=RADIO_CFG,
+                 ap=_RadioAP(uci={"wireless": "wireless.radio0.country='CA'"}))
+    with pytest.raises(AssertionError, match="different regulatory domain"):
+        validators.check_regulatory_domain(case)
+
+
+def test_the_right_country_passes():
+    assert "US" in validators.check_regulatory_domain(_radio_case())
+
+
+# ── services with a local trace ──────────────────────────────────────────────
+
+def test_online_check_hosts_the_ap_cannot_reach_are_caught():
+    """Otherwise the feature acts on the bench's connectivity, not the AP's."""
+    case = _case(
+        config={"services": {"online-check": {"ping-hosts": ["192.168.178.1"]}}},
+        ap=_FakeAP(responses={"ping": ""}),
+    )
+    with pytest.raises(AssertionError, match="can reach none of them"):
+        validators.check_online_check(case)
+
+
+def test_online_check_passes_when_the_ap_reaches_a_host():
+    case = _case(
+        config={"services": {"online-check": {"ping-hosts": ["1.1.1.1", "x.invalid"]}}},
+        ap=_FakeAP(responses={"ping": "up"}),
+    )
+    assert "reaches 2 of 2" in validators.check_online_check(case)
+
+
+def test_fingerprint_needs_its_collector_running():
+    case = _case(config={"services": {"fingerprint": {"mode": "raw"}}},
+                 ap=_FakeAP(responses={"ucentral-state": "0"}))
+    with pytest.raises(AssertionError, match="is not running"):
+        validators.check_fingerprint(case)
+
+
+def test_dhcp_snooping_reports_the_filters_it_watches():
+    case = _case(config={"metrics": {"dhcp-snooping": {"filters": ["ack", "offer"]}}},
+                 ap=_FakeAP(responses={"ucentral-state": "1"}))
+    assert "2 DHCP message type(s)" in validators.check_dhcp_snooping(case)
+
+
+def test_every_case_gets_the_radio_and_country_checks():
+    case = _case(config={"services": {"ssh": {"port": 22}}})
+    assert any(n == "radio settings" for n, _ in validators.per_ssid_checks(case))
+    assert any(n == "regulatory domain" for n, _ in validators.ap_side_checks(case))

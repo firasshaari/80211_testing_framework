@@ -139,6 +139,83 @@ def check_forwarding_mode(case: Case) -> str:
     return f"{ip} is on the upstream network, off the management subnet"
 
 
+# ── the radio landed where the config put it ─────────────────────────────────
+# `strict` stops the renderer *silently clamping* a mode it cannot do, but it
+# says nothing about where the radio ended up afterwards. A radio that fell back
+# to ACS, or came up 20 MHz wide when 80 was asked for, serves clients perfectly
+# well — every other check in the suite passes — while the case quietly stops
+# testing the band plan it was written for.
+
+_MHZ_TO_CHANNEL = {2412: 1, 2437: 6, 2462: 11, 5180: 36, 5200: 40, 5220: 44,
+                   5240: 48, 5745: 149, 5765: 153, 5785: 157, 5805: 161}
+
+
+def check_radio_settings(case: Case) -> str:
+    radio = next((r for r in case.config.get("radios") or []
+                  if r.get("band") == case.band), None)
+    if not radio:
+        return f"config declares no {case.band} radio"
+
+    problems, seen = [], []
+
+    wanted_channel = radio.get("channel")
+    if wanted_channel and case.assoc.freq_mhz:
+        got = _MHZ_TO_CHANNEL.get(case.assoc.freq_mhz)
+        seen.append(f"channel {got or case.assoc.freq_mhz}")
+        if got and got != wanted_channel:
+            problems.append(
+                f"configured channel {wanted_channel} but the client "
+                f"associated on channel {got} ({case.assoc.freq_mhz} MHz)"
+            )
+
+    # iwinfo reports the mode and width together, e.g. "HT Mode: HE20".
+    htmode = ""
+    for line in case.ap.iwinfo().splitlines():
+        if case.ssid.name in line:
+            htmode = ""
+        if "HT Mode:" in line:
+            htmode = line.split("HT Mode:", 1)[1].strip().split()[0]
+            break
+    if htmode:
+        seen.append(htmode)
+        mode, width = radio.get("channel-mode"), radio.get("channel-width")
+        if mode and not htmode.startswith(mode):
+            problems.append(
+                f"configured channel-mode {mode} but the radio is running "
+                f"{htmode}"
+            )
+        if width and not htmode.endswith(str(width)):
+            problems.append(
+                f"configured channel-width {width} MHz but the radio is "
+                f"running {htmode}"
+            )
+
+    assert not problems, "; ".join(problems)
+    return f"radio is on {', '.join(seen) or 'the configured settings'}"
+
+
+def check_regulatory_domain(case: Case) -> str:
+    """
+    The country the AP is actually enforcing.
+
+    Every example ships `CA` and normalization rewrites it to the bench's
+    country. If that never reached the radio, the AP is transmitting under the
+    wrong regulatory rules — and channel and power limits differ between them,
+    so results stop being comparable.
+    """
+    wanted = next((r.get("country") for r in case.config.get("radios") or []
+                   if r.get("country")), None)
+    if not wanted:
+        return "config pins no country"
+
+    rendered = case.uci("wireless")
+    assert f"country='{wanted}'" in rendered, (
+        f"config asks for country {wanted} but the AP's wireless config does "
+        f"not carry it — the radio is enforcing a different regulatory domain"
+    )
+    return f"radio enforcing country {wanted}"
+
+
 # ── the SSID's VLAN ──────────────────────────────────────────────────────────
 
 def check_vlan_placement(case: Case) -> str:
@@ -474,6 +551,55 @@ def check_admin_ui(case: Case) -> str:
     return "uhttpd running to serve the admin UI"
 
 
+def check_fingerprint(case: Case) -> str:
+    """The requested fingerprint mode must be the one the AP is running."""
+    wanted = ((case.config.get("services") or {}).get("fingerprint") or {}).get("mode")
+    if not wanted:
+        return "no fingerprint service in this config"
+    running = case.sh("ps w | grep -c '[u]central-state'")
+    assert running not in ("", "0"), (
+        "fingerprinting is configured but ucentral-state, which collects it, "
+        "is not running"
+    )
+    return f"fingerprint mode {wanted} accepted; collector running"
+
+
+def check_online_check(case: Case) -> str:
+    """
+    The AP must be able to reach what it was told to watch.
+
+    online-check drives the AP's own reachability logic — if the hosts it is
+    given are unreachable *from the AP*, the feature will act on that (killing
+    wifi, changing LEDs) and the case would look like an AP fault when it is
+    the bench's own connectivity.
+    """
+    service = (case.config.get("services") or {}).get("online-check") or {}
+    hosts = [h for h in service.get("ping-hosts") or [] if h]
+    if not hosts:
+        return "no online-check hosts configured"
+
+    reachable = [h for h in hosts
+                 if case.sh(f"ping -c 1 -W 2 {h} >/dev/null 2>&1 && echo up") == "up"]
+    assert reachable, (
+        f"online-check watches {hosts} but the AP can reach none of them, so "
+        f"the feature will declare itself offline regardless of the AP"
+    )
+    return f"AP reaches {len(reachable)} of {len(hosts)} watched host(s): {reachable}"
+
+
+def check_dhcp_snooping(case: Case) -> str:
+    """DHCP snooping is a telemetry filter; the collector must be alive to use it."""
+    filters = ((case.config.get("metrics") or {}).get("dhcp-snooping") or {}).get("filters")
+    if not filters:
+        return "no dhcp-snooping filters configured"
+    running = case.sh("ps w | grep -c '[u]central-state'")
+    assert running not in ("", "0"), (
+        "dhcp-snooping is configured but the collector that would report it is "
+        "not running"
+    )
+    return f"snooping {len(filters)} DHCP message type(s); collector running"
+
+
 def check_telemetry(case: Case) -> str:
     """
     What is honestly checkable with the controller out of the picture.
@@ -516,6 +642,11 @@ PER_SSID_BY_AREA: dict[str, Callable[[Case], str]] = {
 
 AP_SIDE: dict[str, Callable[[Case], str]] = {
     "igmp": check_igmp,
+    "online-check": check_online_check,
+    "dhcpsnoop": check_dhcp_snooping,
+    "fingerprint-raw": check_fingerprint,
+    "fingerprint-final-always": check_fingerprint,
+    "fingerprint-final-periodic": check_fingerprint,
     "ntp": check_ntp,
     "lldp": check_lldp,
     "ssh": check_ssh_service,
@@ -531,6 +662,12 @@ ALWAYS_PER_SSID: tuple[Callable[[Case], str], ...] = (
     check_negotiated_encryption,
     check_forwarding_mode,
     check_vlan_placement,
+    check_radio_settings,
+)
+
+# Runs once per case against the AP, whatever the example.
+ALWAYS_AP_SIDE: tuple[Callable[[Case], str], ...] = (
+    check_regulatory_domain,
 )
 
 
@@ -547,7 +684,8 @@ def per_ssid_checks(case: Case) -> list[tuple[str, Callable[[Case], str]]]:
 
 
 def ap_side_checks(case: Case) -> list[tuple[str, Callable[[Case], str]]]:
-    checks = []
+    checks = [(f.__name__.replace("check_", "").replace("_", " "), f)
+              for f in ALWAYS_AP_SIDE]
     special = AP_SIDE.get(case.example.name)
     if special:
         checks.append((case.example.name, special))
