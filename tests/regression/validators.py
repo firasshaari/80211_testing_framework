@@ -72,8 +72,17 @@ _EXPECTED_KEY_MGMT = {
     "sae-mixed": ("SAE", "WPA2-PSK", "WPA-PSK"),
     "owe": ("OWE",),
     "owe-transition": ("OWE",),
-    "wpa2": ("WPA2-EAP", "WPA-EAP"),
-    "wpa3": ("WPA3-EAP", "WPA2-EAP", "WPA-EAP"),
+    # wpa_supplicant reports enterprise as "WPA2/IEEE 802.1X/EAP", not
+    # "WPA2-EAP" — matching the hyphenated form failed a BSS that had done
+    # exactly the right thing. Match on the part that actually identifies
+    # 802.1X, which is stable across the variants.
+    "wpa": ("802.1X", "EAP"),
+    "wpa-mixed": ("802.1X", "EAP"),
+    "wpa2": ("802.1X", "EAP"),
+    "wpa2-radius": ("802.1X", "EAP"),
+    "wpa3": ("802.1X", "EAP"),
+    "wpa3-mixed": ("802.1X", "EAP"),
+    "psk2-radius": ("WPA2-PSK", "WPA-PSK", "802.1X"),
 }
 
 

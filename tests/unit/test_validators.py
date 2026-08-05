@@ -686,3 +686,26 @@ def test_every_case_gets_the_radio_and_country_checks():
     case = _case(config={"services": {"ssh": {"port": 22}}})
     assert any(n == "radio settings" for n, _ in validators.per_ssid_checks(case))
     assert any(n == "regulatory domain" for n, _ in validators.ap_side_checks(case))
+
+
+def test_enterprise_key_mgmt_uses_the_form_wpa_supplicant_reports():
+    """
+    wpa_supplicant says "WPA2/IEEE 802.1X/EAP", not "WPA2-EAP". Matching the
+    hyphenated form failed a BSS that had authenticated correctly over 802.1X.
+    """
+    case = _case(
+        ssid=_ssid("wpa2", "ap-wpa2"),
+        assoc=Association(ssid="ap-wpa2", ip="10.10.100.10",
+                          key_mgmt="WPA2/IEEE 802.1X/EAP", pairwise_cipher="CCMP"),
+    )
+    assert "802.1X" in validators.check_negotiated_encryption(case)
+
+
+def test_an_enterprise_ssid_that_came_up_as_psk_is_still_caught():
+    case = _case(
+        ssid=_ssid("wpa2", "ap-wpa2"),
+        assoc=Association(ssid="ap-wpa2", ip="10.10.100.10",
+                          key_mgmt="WPA2-PSK", pairwise_cipher="CCMP"),
+    )
+    with pytest.raises(AssertionError, match="weaker security"):
+        validators.check_negotiated_encryption(case)

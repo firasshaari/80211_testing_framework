@@ -125,7 +125,13 @@ def test_example(example_name, band, apply_case, ap, station, capabilities,
             )
 
     # ── 3. the station can join ──────────────────────────────────────────────
-    targets = station_ready_ssids(config, bands=frozenset({band}))
+    # Enterprise SSIDs are joinable only when the bench holds a certificate
+    # identity for them (infra/pki). Without this the RADIUS examples would
+    # only ever exercise their companion PSK SSID.
+    targets = station_ready_ssids(
+        config, bands=frozenset({band}),
+        enterprise=bool(_eap_identity(testbed_config)),
+    )
     if not targets:
         allure.dynamic.parameter("client", "no SSID this station can join unaided")
         return
@@ -177,6 +183,28 @@ def test_example(example_name, band, apply_case, ap, station, capabilities,
         )
 
 
+def _eap_identity(testbed_config) -> dict:
+    """
+    The certificate identity for enterprise SSIDs, or {} if the bench has none.
+
+    Returning an empty dict rather than raising keeps a bench without a PKI
+    working exactly as before: the enterprise SSIDs simply stay out of the
+    joinable set instead of failing.
+    """
+    radius = getattr(testbed_config.external, "radius", None)
+    if not radius or not (radius.ca_cert and radius.client_cert and radius.private_key):
+        return {}
+    return {
+        "identity": radius.identity,
+        "eap_method": radius.eap_method,
+        "certificates": {
+            "ca_cert": radius.ca_cert,
+            "client_cert": radius.client_cert,
+            "private_key": radius.private_key,
+        },
+    }
+
+
 def _run_checks(checks, case, label) -> list[str]:
     """
     Run feature checks, recording each as its own step.
@@ -213,10 +241,12 @@ def _join_and_use(station, ssid, testbed_config):
     successful association is as much a result as a failed one.
     """
     try:
+        eap = _eap_identity(testbed_config) if ssid.enterprise else {}
         assoc = station.connect(
             ssid.name, ssid.proto,
             passphrase=ssid.key or testbed_config.settings.default_passphrase,
             timeout=testbed_config.settings.association_timeout,
+            **eap,
         )
     except StationError:
         allure.attach(station.supplicant_evidence(),
