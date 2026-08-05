@@ -709,3 +709,50 @@ def test_an_enterprise_ssid_that_came_up_as_psk_is_still_caught():
     )
     with pytest.raises(AssertionError, match="weaker security"):
         validators.check_negotiated_encryption(case)
+
+
+# ── which identity an enterprise SSID actually needs ─────────────────────────
+# An SSID carrying radius.local is authenticated by the *AP's own* EAP server,
+# which presents a vendor certificate signed by a root the bench has no copy of.
+# Handing it the bench certificate identity fails with a TLS certificate error
+# that reads like an AP fault.
+
+class _Radius:
+    identity = "testuser"
+    eap_method = "TLS"
+    ca_cert="/etc/regression-pki/ca.pem"
+    client_cert="/etc/regression-pki/client.pem"
+    private_key="/etc/regression-pki/client.key"
+
+
+class _TB:
+    class external:
+        radius = _Radius()
+
+
+def test_an_ap_local_eap_ssid_uses_the_aps_own_account():
+    from framework.examples.inspect import iter_ssids
+    from tests.regression.test_examples import _identity_for
+
+    cfg = {"interfaces": [{"name": "WAN", "ssids": [
+        {"name": "ap-wpa2", "encryption": {"proto": "wpa2"},
+         "radius": {"local": {"users": [{"user-name": "john", "password": "aaaaaaaa"}]}}},
+    ]}]}
+    got = _identity_for(iter_ssids(cfg)[0], _TB())
+    assert got["identity"] == "john"
+    assert got["eap_password"] == "aaaaaaaa"
+    assert got["eap_method"] == "PEAP"
+    assert "certificates" not in got
+
+
+def test_an_external_radius_ssid_uses_the_bench_certificate_identity():
+    from framework.examples.inspect import iter_ssids
+    from tests.regression.test_examples import _identity_for
+
+    cfg = {"interfaces": [{"name": "WAN", "ssids": [
+        {"name": "ap-wpa2", "encryption": {"proto": "wpa2"},
+         "radius": {"authentication": {"host": "10.0.127.77", "secret": "x"}}},
+    ]}]}
+    got = _identity_for(iter_ssids(cfg)[0], _TB())
+    assert got["eap_method"] == "TLS"
+    assert got["certificates"]["ca_cert"].endswith("ca.pem")

@@ -32,6 +32,10 @@ class SSIDSpec:
     has_radius: bool = False
     has_multi_psk: bool = False
     captive: dict = field(default_factory=dict)
+    # Accounts served by the AP's *own* EAP server (radius.local). An SSID with
+    # these does not talk to the lab RADIUS at all — the AP terminates EAP
+    # itself, presenting its vendor certificate.
+    local_eap: dict = field(default_factory=dict)
 
     @property
     def has_captive(self) -> bool:
@@ -66,6 +70,13 @@ class SSIDSpec:
         if self.proto in ("none", "open", "owe", "owe-transition"):
             return True
         return self.proto in STATION_READY_PROTOS and bool(self.key)
+
+    @property
+    def local_eap_login(self) -> tuple[str, str]:
+        """First account the AP's own EAP server will accept, or empty."""
+        for u in self.local_eap.get("users") or []:
+            return u.get("user-name", ""), u.get("password", "")
+        return "", ""
 
     @property
     def enterprise(self) -> bool:
@@ -124,6 +135,7 @@ def _ssid_spec(ssid: dict, iface: InterfaceSpec, *,
         has_radius=bool(ssid.get("radius")),
         has_multi_psk=bool(ssid.get("multi-psk")),
         captive=captive,
+        local_eap=(ssid.get("radius") or {}).get("local") or {},
     )
 
 

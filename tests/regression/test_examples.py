@@ -183,6 +183,24 @@ def test_example(example_name, band, apply_case, ap, station, capabilities,
         )
 
 
+def _identity_for(ssid, testbed_config) -> dict:
+    """
+    The credentials this particular enterprise SSID actually needs.
+
+    An SSID carrying ``radius.local`` is authenticated by the **AP's own** EAP
+    server, not the lab one: the AP presents its vendor certificate — signed by
+    a root we have no copy of — and expects one of the accounts named in the
+    config. Handing it the bench certificate identity fails with a TLS
+    certificate error that reads like an AP fault. Those SSIDs get their own
+    username and password over PEAP instead, with server validation off,
+    because there is no way to obtain the vendor root on a closed bench.
+    """
+    user, password = ssid.local_eap_login
+    if user:
+        return {"identity": user, "eap_password": password, "eap_method": "PEAP"}
+    return _eap_identity(testbed_config)
+
+
 def _eap_identity(testbed_config) -> dict:
     """
     The certificate identity for enterprise SSIDs, or {} if the bench has none.
@@ -241,7 +259,7 @@ def _join_and_use(station, ssid, testbed_config):
     successful association is as much a result as a failed one.
     """
     try:
-        eap = _eap_identity(testbed_config) if ssid.enterprise else {}
+        eap = _identity_for(ssid, testbed_config) if ssid.enterprise else {}
         assoc = station.connect(
             ssid.name, ssid.proto,
             passphrase=ssid.key or testbed_config.settings.default_passphrase,
