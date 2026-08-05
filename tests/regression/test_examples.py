@@ -197,7 +197,12 @@ def _identity_for(ssid, testbed_config) -> dict:
     """
     user, password = ssid.local_eap_login
     if user:
-        return {"identity": user, "eap_password": password, "eap_method": "PEAP"}
+        # The AP's own EAP server offers **EAP-PWD** (method 52), not PEAP —
+        # the supplicant NAKs anything it was not configured to accept and the
+        # exchange ends in EAP-Failure that looks like a rejected credential.
+        # EAP-PWD needs no certificate on either side, which is also why the
+        # AP can run it without the bench trusting its vendor root.
+        return {"identity": user, "eap_password": password, "eap_method": "PWD"}
     return _eap_identity(testbed_config)
 
 

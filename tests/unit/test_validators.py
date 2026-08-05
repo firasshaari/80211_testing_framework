@@ -741,7 +741,8 @@ def test_an_ap_local_eap_ssid_uses_the_aps_own_account():
     got = _identity_for(iter_ssids(cfg)[0], _TB())
     assert got["identity"] == "john"
     assert got["eap_password"] == "aaaaaaaa"
-    assert got["eap_method"] == "PEAP"
+    # EAP-PWD (method 52) is what the AP's own server offers; PEAP gets NAK'd.
+    assert got["eap_method"] == "PWD"
     assert "certificates" not in got
 
 
