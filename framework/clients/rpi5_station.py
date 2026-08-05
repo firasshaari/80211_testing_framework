@@ -1217,6 +1217,58 @@ class Station:
             lines.append("-> no upstream path at all past the gateway")
         return "\n".join(lines)
 
+    # A file big enough that TCP leaves slow-start well behind, from a host
+    # that is not rate-limited itself. Downloading a fixed size rather than
+    # running for a fixed time keeps the measurement comparable between runs.
+    SPEED_URL = "http://speed.cloudflare.com/__down?bytes={bytes}"
+
+    def measure_download_mbps(self, *, megabytes: int = 25, timeout: int = 40,
+                              url: str | None = None) -> float:
+        """
+        Download rate in Mbit/s, measured from the wireless interface.
+
+        Bound to the interface's **source address** for the same reason
+        :meth:`ping` is: ``--interface wlan0`` binds the device, the policy
+        routing rule that carries the wireless default route matches on source
+        address, and the transfer would take the management path instead —
+        measuring the wrong link entirely.
+
+        Returns 0.0 when the transfer produced nothing, which the caller should
+        treat as "no measurement", not as "a very slow link".
+        """
+        source = self.current_ip() or self.iface
+        target = url or self.SPEED_URL.format(bytes=megabytes * 1_000_000)
+        raw = self.ssh.run(
+            f"curl -s -o /dev/null --max-time {timeout} --interface {source} "
+            f"-w '%{{speed_download}}' {shlex.quote(target)}",
+            timeout=timeout + 25,
+        ).stdout.strip()
+        try:
+            return float(raw) * 8 / 1e6
+        except ValueError:
+            log.warning("Download measurement returned %r", raw[:80])
+            return 0.0
+
+    def global_ipv6(self) -> str:
+        """The interface's global (non link-local) IPv6 address, if it has one."""
+        out = self.ssh.run(
+            f"ip -6 -br addr show dev {self.iface} scope global", sudo=True
+        ).stdout
+        m = re.search(r"([0-9a-fA-F:]+)/\d+", out)
+        return m.group(1) if m else ""
+
+    def lab_has_ipv6(self) -> bool:
+        """
+        Whether this bench has any IPv6 upstream at all.
+
+        An AP in bridge mode forwards the upstream network's router
+        advertisements rather than sourcing IPv6 itself, so on a v4-only bench
+        no config can give a client a v6 address. Without this, a dual-stack
+        check reports the lab's own gap as an AP fault.
+        """
+        route = self.ssh.run("ip -6 route show default", sudo=True).stdout.strip()
+        return bool(route)
+
     def verify_internet(self, host: str = "google.com", count: int = 5,
                         timeout: int = 40) -> PingResult:
         """

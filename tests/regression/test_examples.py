@@ -20,6 +20,7 @@ import pytest
 from framework.clients.rpi5_station import StationError
 from framework.examples import catalog
 from framework.examples.inspect import iter_ssids, station_ready_ssids
+from tests.regression import validators
 
 BANDS = ["2G", "5G", "6G"]
 
@@ -138,17 +139,36 @@ def test_example(example_name, band, apply_case, ap, station, capabilities,
     # all. It also matches the rule that every successful connect has to pass
     # traffic, not just one of them.
     passed, failed = [], []
+    case = validators.Case(
+        ap=ap, station=station, config=config, example=example, band=band,
+        mode=MODE, testbed=testbed_config,
+    )
     with allure.step(f"Client joins and passes traffic ({len(targets)} SSID(s))"):
         for ssid in targets:
             label = f"{ssid.name} ({ssid.proto})"
             try:
                 with allure.step(label):
-                    _join_and_use(station, ssid, testbed_config)
+                    assoc = _join_and_use(station, ssid, testbed_config)
+                    # Still associated, so anything measured or probed here is
+                    # measured over the link under test.
+                    case.ssid, case.assoc = ssid, assoc
+                    failed.extend(_run_checks(
+                        validators.per_ssid_checks(case), case, label
+                    ))
                 passed.append(ssid.name)
             except (AssertionError, StationError) as exc:
                 failed.append(f"{label}: {_brief(exc)}")
             finally:
                 station.disconnect()
+
+    # ── 5. the feature the example exists to exercise actually works ─────────
+    ap_checks = validators.ap_side_checks(case)
+    if ap_checks and passed:
+        with allure.step(f"{example.name} behaves as configured"):
+            failed.extend(_run_checks(ap_checks, case, example.name))
+            for note in case.notes:
+                allure.attach(note, "scope of this check",
+                              allure.attachment_type.TEXT)
 
     if failed:
         pytest.fail(
@@ -157,7 +177,34 @@ def test_example(example_name, band, apply_case, ap, station, capabilities,
         )
 
 
-def _join_and_use(station, ssid, testbed_config) -> None:
+def _run_checks(checks, case, label) -> list[str]:
+    """
+    Run feature checks, recording each as its own step.
+
+    A failing check is collected rather than raised, so one feature assertion
+    going wrong still lets the others report — the point of these is to say
+    *which* parts of a feature work, and stopping at the first failure throws
+    that away.
+    """
+    problems = []
+    for name, check in checks:
+        with allure.step(f"{name}"):
+            try:
+                evidence = check(case)
+                allure.attach(evidence, f"{name} — evidence",
+                              allure.attachment_type.TEXT)
+            except AssertionError as exc:
+                problems.append(f"{label} [{name}]: {_brief(exc)}")
+            except Exception as exc:                  # noqa: BLE001
+                # A check that cannot run is not the same as a feature that is
+                # broken, and must not be reported as one.
+                allure.attach(f"{type(exc).__name__}: {exc}",
+                              f"{name} — could not run",
+                              allure.attachment_type.TEXT)
+    return problems
+
+
+def _join_and_use(station, ssid, testbed_config):
     """
     Associate to one SSID, clear any portal, and prove it carries traffic.
 
@@ -197,6 +244,7 @@ def _join_and_use(station, ssid, testbed_config) -> None:
         f"had {assoc.ip} but no traffic "
         f"({ping.received}/{ping.transmitted} replies)"
     )
+    return assoc
 
 
 def _pass_the_portal(station, ssid, testbed_config) -> None:
