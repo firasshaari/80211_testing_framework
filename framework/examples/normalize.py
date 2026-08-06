@@ -319,6 +319,19 @@ def _normalize_radio(
         radio["country"] = country
         report.record(f"{tag}: country {current!r} -> {country!r}")
 
+    # ── VHT is 5 GHz only ────────────────────────────────────────────────────
+    # 802.11ac is not defined for 2.4 GHz. Some APs advertise VHT on 2G in
+    # capabilities.json anyway — the Edgecore EAP102 does — and then quietly
+    # run HT: the renderer emits no warning, so `strict` does not catch it and
+    # the case silently stops testing the mode it asked for. HE (802.11ax) is
+    # genuinely valid on 2.4 GHz and is left alone.
+    if band == "2G" and str(radio.get("channel-mode", "")).upper() == "VHT":
+        radio["channel-mode"] = "HT"
+        report.record(
+            f"{tag}: channel-mode VHT -> HT (802.11ac is not defined on 2.4 GHz; "
+            f"an AP advertising it there runs HT regardless)"
+        )
+
     if band not in BAND_VALID_WIDTHS:
         return
 
@@ -576,7 +589,8 @@ def restrict_to_band(
         # The example may not declare this band at all; synthesise a radio for
         # it rather than skipping the combination entirely.
         kept = [{"band": band, "country": DEFAULT_COUNTRY,
-                 "channel-mode": "HE" if band == "6G" else "VHT",
+                 # VHT does not exist on 2.4 GHz; HT is the honest default there.
+                 "channel-mode": {"6G": "HE", "2G": "HT"}.get(band, "VHT"),
                  "channel-width": DEFAULT_2G_WIDTH if band == "2G" else 80}]
         if report is not None:
             report.record(f"example declares no {band} radio — added one for this case")

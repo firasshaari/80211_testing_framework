@@ -1562,3 +1562,54 @@ def test_a_key_password_is_included_when_the_bundle_has_one():
         certificates={**CERTS, "private_key_passwd": "whatever"},
     )
     assert 'private_key_passwd="whatever"' in block
+
+
+# ── VHT does not exist on 2.4 GHz ────────────────────────────────────────────
+# The Edgecore EAP102 advertises VHT on 2G in capabilities.json and then runs
+# HT20 regardless. The renderer emits no warning, so `strict` does not catch it
+# and the case silently stops testing the mode it asked for.
+
+def test_vht_on_24ghz_is_downgraded_to_ht():
+    cfg, report = normalize_config(
+        {"radios": [{"band": "2G", "channel-mode": "VHT", "channel-width": 20,
+                     "channel": 1, "country": "US"}]}
+    )
+    assert cfg["radios"][0]["channel-mode"] == "HT"
+    assert any("802.11ac is not defined on 2.4 GHz" in c for c in report.changes)
+
+
+def test_he_on_24ghz_is_left_alone():
+    """802.11ax is genuinely valid on 2.4 GHz."""
+    cfg, _ = normalize_config(
+        {"radios": [{"band": "2G", "channel-mode": "HE", "channel-width": 20,
+                     "channel": 1, "country": "US"}]}
+    )
+    assert cfg["radios"][0]["channel-mode"] == "HE"
+
+
+def test_vht_on_5ghz_is_untouched():
+    cfg, _ = normalize_config(
+        {"radios": [{"band": "5G", "channel-mode": "VHT", "channel-width": 80,
+                     "channel": 36, "country": "US"}]}
+    )
+    assert cfg["radios"][0]["channel-mode"] == "VHT"
+
+
+def test_a_synthesised_2g_radio_never_asks_for_vht():
+    from framework.examples.normalize import restrict_to_band
+
+    cfg, _ = normalize_config(load_example("lldp"), example="lldp")
+    restrict_to_band(cfg, "2G")
+    assert cfg["radios"][0]["channel-mode"] != "VHT"
+
+
+def test_no_example_asks_for_vht_on_24ghz():
+    from framework.examples import catalog
+    from framework.examples.normalize import restrict_to_band
+
+    for example in catalog.EXAMPLES:
+        cfg, _ = normalize_config(load_example(example.name), example=example.name)
+        restrict_to_band(cfg, "2G")
+        for radio in cfg["radios"]:
+            if radio.get("band") == "2G":
+                assert radio.get("channel-mode") != "VHT", example.name
