@@ -32,7 +32,11 @@ if [ ! -f "$INFRA/pki/out/server.pem" ]; then
   sh "$INFRA/pki/make-pki.sh" "$INFRA/pki/out"
 fi
 
-podman run -d --name radius --network host --restart no \
+# `--restart no` meant a station reboot silently took RADIUS away with it, and
+# every enterprise case then failed with the client associating and finding no
+# authentication server — which reads as an AP fault. The bench must come back
+# by itself.
+podman run -d --name radius --network host --restart unless-stopped \
   -v "$INFRA/freeradius/clients.conf":/etc/freeradius/3.0/clients.conf:ro,z \
   -v "$INFRA/freeradius/authorize":/etc/freeradius/3.0/mods-config/files/authorize:ro,z \
   -v "$INFRA/freeradius/eap":/etc/freeradius/3.0/mods-enabled/eap:ro,z \
