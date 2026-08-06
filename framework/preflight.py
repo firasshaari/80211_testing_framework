@@ -48,10 +48,22 @@ def main() -> int:
     ok &= check(f"station radio {iface} present",
                 station.run(f"test -d /sys/class/net/{iface}").ok)
 
+    # Prepare the interface the same way a test does before judging it. After a
+    # reboot NetworkManager owns the radio and a scan returns nothing, which is
+    # not a fault — it is simply a step that has not run yet.
+    from framework.clients.rpi5_station import Station
+
+    sta = Station(cfg.station.host, cfg.station.user, cfg.station.password,
+                  iface=iface, root_password=cfg.station.root_password)
+    try:
+        sta.prepare()
+    except Exception as exc:                                  # noqa: BLE001
+        check("station interface prepared", False, str(exc)[:60])
+
     # The radio must not merely exist — it has to be able to scan, which is what
     # every "SSID not on the air" verdict depends on.
-    scan = station.run(f"ip link set {iface} up; iw dev {iface} scan | grep -c '^BSS '",
-                       sudo=True, timeout=60).stdout.strip()
+    scan = station.run(f"iw dev {iface} scan | grep -c '^BSS '",
+                       sudo=True, timeout=90).stdout.strip()
     ok &= check("station can scan", scan.isdigit() and int(scan) > 0,
                 f"{scan or '0'} BSS visible")
 
