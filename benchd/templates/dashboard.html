@@ -1,0 +1,52 @@
+{% extends "base.html" %}{% set nav='home' %}
+{% block body %}
+<h1>The bench</h1>
+<p>One AP, one RPi5 station, {{ summary.examples }} catalogued examples run once per band —
+{{ summary.cases }} cases in a full sweep, two to three hours.</p>
+
+{% if busy and current %}
+  <div class="banner"><strong>A run is in progress</strong> against {{ current.ap_label }}
+  ({{ current.scope_label }}). <a href="/run/{{ current.id }}/console">Watch it</a>.</div>
+{% endif %}
+
+<div class="tiles">
+  <div class="tile"><div class="k">Runs stored</div><div class="v">{{ total_runs }}</div>
+       <div class="s">every one keeps its AP identity</div></div>
+  <div class="tile"><div class="k">Examples</div><div class="v">{{ summary.examples }}</div>
+       <div class="s">{{ summary.config_only }} declare no BSS</div></div>
+  <div class="tile"><div class="k">Checks</div><div class="v">{{ summary.checks }}</div>
+       <div class="s">{{ summary.with_extra }} examples go beyond connect+traffic</div></div>
+  <div class="tile"><div class="k">Cases per sweep</div><div class="v">{{ summary.cases }}</div>
+       <div class="s">{{ summary.examples }} examples × 3 bands</div></div>
+</div>
+
+<div class="actions">
+  <a class="btn" href="/new">Start a run</a>
+  <a class="btn ghost" href="/compare">Compare two runs</a>
+  <a class="btn ghost" href="/docs/validation">What each test proves</a>
+</div>
+
+<h2>Recent runs</h2>
+{% if runs %}
+<div class="scroller"><table>
+<thead><tr><th>When</th><th>AP</th><th>Firmware</th><th>Scope</th>
+<th class="num">Pass</th><th class="num">Fail</th><th class="num">Skip</th><th></th></tr></thead>
+<tbody>
+{% for m in runs %}
+<tr>
+  <td class="mono"><span class="dot {{ m.status }}"></span>{{ m.started[:16].replace('T',' ') }}</td>
+  <td>{{ m.ap_label }}{% if m.label %}<div class="dim" style="font-size:12px">{{ m.label }}</div>{% endif %}</td>
+  <td class="mono">{{ m.fw }}</td>
+  <td class="dim">{{ m.scope_label }}{% if m.imported %} <span class="pill">imported</span>{% endif %}</td>
+  <td class="num">{{ m.totals.get('passed', 0) }}</td>
+  <td class="num">{{ m.totals.get('failed', 0) + m.totals.get('broken', 0) }}</td>
+  <td class="num dim">{{ m.totals.get('skipped', 0) }}</td>
+  <td><a href="/run/{{ m.id }}">open</a></td>
+</tr>
+{% endfor %}
+</tbody></table></div>
+<p><a href="/runs">All runs →</a></p>
+{% else %}
+<div class="card"><p>No runs yet. <a href="/new">Start one</a>.</p></div>
+{% endif %}
+{% endblock %}

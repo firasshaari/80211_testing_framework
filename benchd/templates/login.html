@@ -1,0 +1,19 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in — Bench Console</title><link rel="stylesheet" href="/static/bench.css"></head>
+<body><div class="wrap narrow" style="padding-top:80px;max-width:460px">
+  <h1>Bench Console</h1>
+  {% if needs_setup %}
+    <div class="banner">No bench password is set yet. <strong>The password you type now
+    becomes the bench password.</strong> Everyone who runs tests here will use it.</div>
+  {% else %}
+    <p class="dim">The console holds AP credentials and can start tests on live hardware,
+    so it asks before letting you in.</p>
+  {% endif %}
+  {% if error %}<div class="banner bad">{{ error }}</div>{% endif %}
+  <form class="stack" method="post" action="/login">
+    <div><label for="pw">Bench password</label>
+    <input id="pw" type="password" name="password" autofocus required></div>
+    <div><button type="submit">{{ 'Set it and sign in' if needs_setup else 'Sign in' }}</button></div>
+  </form>
+</div></body></html>

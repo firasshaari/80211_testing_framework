@@ -1,0 +1,39 @@
+{% extends "base.html" %}{% set nav='runs' %}
+{% block title %}Console — {{ meta.ap_label }}{% endblock %}
+{% block body %}
+<h1>{{ meta.ap_label }}</h1>
+<p class="dim mono">{{ meta.id }} · {{ meta.scope_label }}</p>
+<div class="actions">
+  <span id="state" class="pill {{ 'warn' if meta.is_live else 'pass' }}">{{ meta.status }}</span>
+  <a class="btn ghost" href="/run/{{ meta.id }}">Summary</a>
+  {% if meta.is_live %}
+  <form method="post" action="/run/{{ meta.id }}/stop" onsubmit="return confirm('Stop this run? Results collected so far are kept.')">
+    <button class="danger" type="submit">Stop</button></form>
+  {% endif %}
+</div>
+<pre class="console" id="log">loading…</pre>
+<script>
+(function(){
+  var box = document.getElementById('log'), state = document.getElementById('state');
+  var offset = 0, first = true;
+  function poll(){
+    fetch('/run/{{ meta.id }}/tail?offset=' + offset)
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (first) { box.textContent = ''; first = false; }
+        if (d.text) {
+          var stuck = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+          box.textContent += d.text;
+          if (stuck) box.scrollTop = box.scrollHeight;
+        }
+        offset = d.offset;
+        if (d.status) { state.textContent = d.status; }
+        if (d.live) { setTimeout(poll, 2000); }
+        else { state.className = 'pill ' + (d.status === 'passed' ? 'pass' : 'fail'); }
+      })
+      .catch(function(){ setTimeout(poll, 5000); });
+  }
+  poll();
+})();
+</script>
+{% endblock %}

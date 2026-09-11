@@ -60,3 +60,7 @@ allure-report*/
 
 # Bench PKI: generated locally, never committed.
 infra/pki/out/
+
+# Bench Console — per-run results and the bench password hash
+runs/
+benchd.env

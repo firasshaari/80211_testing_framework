@@ -24,6 +24,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+console = [
+    # Bench Console — the web UI on the station. Kept optional so a laptop
+    # checkout that only runs sweeps does not need a web stack.
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.1",
+]
 dev = [
     "pytest-xdist",       # parallel test execution
     "pytest-timeout",     # per-test timeout

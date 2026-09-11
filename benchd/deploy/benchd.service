@@ -1,0 +1,20 @@
+[Unit]
+Description=Bench Console — regression test UI for the 802.11 bench
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=test
+WorkingDirectory=/opt/bench/repo
+Environment=BENCH_ROOT=/opt/bench
+ExecStart=/opt/bench/venv/bin/python -m uvicorn benchd.app:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+# A sweep is the point of this box, so the service must not be killed for using
+# CPU or living a long time.
+TimeoutStopSec=30
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

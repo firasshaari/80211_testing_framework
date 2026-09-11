@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% set nav='docs' %}
+{% block body %}
+<h1>How this bench works</h1>
+<p>Four pages. The validation table is generated from the code it describes, so it cannot drift
+away from what the suite actually does.</p>
+<div class="card hi"><h3><a href="/docs/how-it-works">How a run works</a></h3>
+  <p>The six gates every case passes through, what each one proves, and the four guards that stop
+  a test bricking the bench.</p></div>
+<div class="card hi"><h3><a href="/docs/validation">Every test, and how it is validated</a></h3>
+  <p>All {{ summary.examples }} examples and all {{ summary.checks }} checks.
+  {{ summary.with_extra }} examples assert more than "a client joined and passed traffic".
+  Generated from the catalog and the validator registries.</p></div>
+<div class="card hi"><h3><a href="/docs/allure">Reading the Allure report</a></h3>
+  <p>What each part of the report means, which attachments carry the evidence, and how to read a
+  failure message.</p></div>
+<div class="card hi"><h3><a href="/docs/limits">What is not proven</a></h3>
+  <p>The honest ceiling. Stating it is part of the result.</p></div>
+{% endblock %}

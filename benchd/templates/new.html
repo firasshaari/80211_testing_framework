@@ -1,0 +1,128 @@
+{% extends "base.html" %}{% set nav='new' %}
+{% block body %}
+<h1>Start a run</h1>
+<p>The station, RADIUS and VLAN settings come from the bench's own config — only the AP
+changes from run to run. Probe it first to see what it is and what will actually run.</p>
+
+{% if busy %}<div class="banner bad">A run is already in progress. There is one AP and one
+station, so a second run would not be slow — it would be wrong.</div>{% endif %}
+
+<form class="stack" method="post" action="/start" id="form">
+  <div class="row">
+    <div><label for="ap_host">AP address</label>
+      <input id="ap_host" type="text" name="ap_host" placeholder="10.0.127.220" required></div>
+    <div><label for="ap_user">SSH user</label>
+      <input id="ap_user" type="text" name="ap_user" value="root"></div>
+  </div>
+  <div class="row">
+    <div><label for="ap_password">SSH password</label>
+      <input id="ap_password" type="password" name="ap_password" required></div>
+    <div><label for="label">Label <span class="hint">optional — "RC3", "nightly"</span></label>
+      <input id="label" type="text" name="label" placeholder=""></div>
+  </div>
+
+  <div class="actions">
+    <button type="button" class="ghost" id="probe">Probe this AP</button>
+    <span class="dim" id="probing"></span>
+  </div>
+  <div id="result"></div>
+
+  <div class="row">
+    <div><label for="scope_kind">Scope</label>
+      <select id="scope_kind" name="scope_kind">
+        <option value="full">Full sweep — every example, all bands</option>
+        <option value="area">One feature area</option>
+        <option value="example">One example</option>
+      </select></div>
+    <div><label for="scope_value">Which</label>
+      <select id="scope_value" name="scope_value" disabled>
+        <option value="">(full sweep)</option>
+      </select></div>
+  </div>
+  <div class="row">
+    <div><label for="mode">Forwarding</label>
+      <select id="mode" name="mode"><option value="bridge">bridge</option>
+      <option value="nat">nat</option></select></div>
+    <div><label for="cleanup">When it finishes</label>
+      <select id="cleanup" name="cleanup">
+        <option value="factory_reset">factory reset the AP (clean baseline)</option>
+        <option value="restore_agent">restore the uCentral agent</option>
+        <option value="none">leave the AP as the tests left it</option>
+      </select></div>
+  </div>
+  <div class="actions">
+    <button type="submit" {{ 'disabled' if busy }}>Preflight and start</button>
+    <span class="dim">Preflight runs first; a broken bench blocks the run.</span>
+  </div>
+</form>
+
+<script>
+var AREAS = {{ areas|tojson }}, EXAMPLES = {{ examples|tojson }};
+var kind = document.getElementById('scope_kind'), which = document.getElementById('scope_value');
+kind.addEventListener('change', function(){
+  which.innerHTML = '';
+  if (kind.value === 'full') {
+    which.disabled = true;
+    which.appendChild(new Option('(full sweep)', ''));
+    return;
+  }
+  which.disabled = false;
+  (kind.value === 'area' ? AREAS : EXAMPLES).forEach(function(v){
+    which.appendChild(new Option(v, v));
+  });
+});
+
+document.getElementById('probe').addEventListener('click', function(){
+  var f = document.getElementById('form');
+  var body = new FormData();
+  body.append('ap_host', f.ap_host.value);
+  body.append('ap_user', f.ap_user.value);
+  body.append('ap_password', f.ap_password.value);
+  var note = document.getElementById('probing');
+  note.textContent = 'probing…';
+  fetch('/probe', {method: 'POST', body: body})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ note.textContent = ''; render(d); })
+    .catch(function(e){ note.textContent = 'probe failed: ' + e; });
+});
+
+function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+function render(d){
+  var out = document.getElementById('result');
+  if (!d.ok) {
+    out.innerHTML = '<div class="banner bad">Could not read that AP — ' + esc(d.error) + '</div>';
+    return;
+  }
+  var h = '<div class="card good"><h3>' + esc(d.ap.model || 'Unknown model') + '</h3><dl class="kv">';
+  (d.rows || []).forEach(function(r){
+    h += '<dt>' + esc(r[0]) + '</dt><dd class="mono">' + esc(r[1]) + '</dd>';
+  });
+  h += '</dl>';
+  if (d.radios && d.radios.length) {
+    h += '<h3>Radios</h3><table><tbody>';
+    d.radios.forEach(function(r){
+      h += '<tr><td class="mono">' + esc(r.band) + '</td><td class="dim">' +
+           esc(r.modes.join(', ')) + ' · ' + r.channels.length + ' channels</td></tr>';
+    });
+    h += '</tbody></table>';
+  }
+  h += '<h3>What would run here</h3><p><strong>' + d.runnable.length +
+       '</strong> examples would run, <strong>' + d.skipped.length +
+       '</strong> would skip for want of hardware.</p>';
+  var reasons = {};
+  d.skipped.forEach(function(s){ reasons[s.reason] = (reasons[s.reason] || 0) + 1; });
+  h += '<table><tbody>';
+  Object.keys(reasons).sort().forEach(function(k){
+    h += '<tr><td class="num">' + reasons[k] + '</td><td class="dim">' + esc(k) + '</td></tr>';
+  });
+  h += '</tbody></table>';
+  if (d.notes && d.notes.length) {
+    h += '<h3>Notes</h3><ul>';
+    d.notes.forEach(function(n){ h += '<li class="dim">' + esc(n) + '</li>'; });
+    h += '</ul>';
+  }
+  out.innerHTML = h + '</div>';
+}
+</script>
+{% endblock %}

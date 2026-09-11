@@ -1,0 +1,86 @@
+{% extends "base.html" %}{% set nav='docs' %}{% block wrapclass %}narrow{% endblock %}
+{% block body %}
+<h1>How a run works</h1>
+<p>The console never reimplements a test. It spawns the same pytest command a person would type,
+against a config it wrote for this run. Every stage below is an <code>allure.step</code>, so the
+report shows exactly how far a case travelled before it stopped.</p>
+
+<figure>
+<svg viewBox="0 0 760 560" role="img" width="100%"
+     aria-label="The six stages a case passes through: normalize, apply, confirm on air, join and carry traffic, per-SSID checks, AP-side checks — each with the failure it produces.">
+ <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7"
+   orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+ <g fill="none" stroke="currentColor" stroke-width="1.2" opacity=".85">
+  <rect x="16" y="14"  width="290" height="66" rx="3"/>
+  <rect x="16" y="102" width="290" height="66" rx="3"/>
+  <rect x="16" y="190" width="290" height="66" rx="3"/>
+  <rect x="16" y="278" width="290" height="66" rx="3"/>
+  <rect x="16" y="366" width="290" height="66" rx="3"/>
+  <rect x="16" y="454" width="290" height="66" rx="3"/>
+  <line x1="161" y1="80"  x2="161" y2="98"  marker-end="url(#a)"/>
+  <line x1="161" y1="168" x2="161" y2="186" marker-end="url(#a)"/>
+  <line x1="161" y1="256" x2="161" y2="274" marker-end="url(#a)"/>
+  <line x1="161" y1="344" x2="161" y2="362" marker-end="url(#a)"/>
+  <line x1="161" y1="432" x2="161" y2="450" marker-end="url(#a)"/>
+  <path d="M16,135 C-6,135 -6,47 16,47" stroke-dasharray="3 3" marker-end="url(#a)"/>
+ </g>
+ <g font-family="system-ui,sans-serif" fill="currentColor">
+  <text x="32" y="38"  font-size="13" font-weight="650">1 · Normalize</text>
+  <text x="32" y="57"  font-size="11" opacity=".72">pin one band · rename SSIDs · force forwarding</text>
+  <text x="32" y="72"  font-size="11" opacity=".72">mode · assign the test VLAN · set strict</text>
+  <text x="32" y="126" font-size="13" font-weight="650">2 · Apply</text>
+  <text x="32" y="145" font-size="11" opacity=".72">arm rollback · hold the agent down · upload ·</text>
+  <text x="32" y="160" font-size="11" opacity=".72">run detached · cancel rollback on success</text>
+  <text x="32" y="214" font-size="13" font-weight="650">3 · On the air</text>
+  <text x="32" y="233" font-size="11" opacity=".72">the AP lists the SSIDs, then a station scan</text>
+  <text x="32" y="248" font-size="11" opacity=".72">proves a beacon actually reached it</text>
+  <text x="32" y="302" font-size="13" font-weight="650">4 · Join and carry traffic</text>
+  <text x="32" y="321" font-size="11" opacity=".72">per SSID: associate · DHCP · pass the portal ·</text>
+  <text x="32" y="336" font-size="11" opacity=".72">reach the internet</text>
+  <text x="32" y="390" font-size="13" font-weight="650">5 · Per-SSID checks</text>
+  <text x="32" y="409" font-size="11" opacity=".72">run while that association is still live, so</text>
+  <text x="32" y="424" font-size="11" opacity=".72">anything measured crosses the link under test</text>
+  <text x="32" y="478" font-size="13" font-weight="650">6 · AP-side checks</text>
+  <text x="32" y="497" font-size="11" opacity=".72">once per case, for features with no</text>
+  <text x="32" y="512" font-size="11" opacity=".72">client-visible signature</text>
+ </g>
+ <g font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="currentColor" opacity=".62">
+  <text x="326" y="42">fails as "AP rejected the config"</text>
+  <text x="326" y="130">fails as "renderer hung on the AP"</text>
+  <text x="326" y="218">fails as "SSID configured, never on air"</text>
+  <text x="326" y="306">fails as "client could not connect"</text>
+  <text x="326" y="394">fails as the named check</text>
+  <text x="326" y="482">fails as the named service check</text>
+ </g>
+</svg>
+<figcaption class="dim" style="font-size:13px">Stages 4 and 5 repeat per SSID: an example
+declaring six SSIDs is six join-and-check cycles inside one case, and the case fails if any of
+them does. The dashed arrow is the rollback — if the apply strands the AP, it reboots itself back
+to the last-known-good config.</figcaption>
+</figure>
+
+<h2>The guards that stop a test bricking the bench</h2>
+<ul>
+  <li><strong>SSH is forced onto the WAN.</strong> Most upstream examples list <code>ssh</code>
+      only on the downstream LAN; applying one unmodified tears down management access.</li>
+  <li><strong>A rollback is armed before each apply</strong> and cancelled only once management
+      access is proven, so a config that cuts the AP off recovers by itself.</li>
+  <li><strong>The apply runs detached</strong>, so a dropped SSH session does not kill the render.</li>
+  <li><strong>The uCentral agent is held down</strong> for the apply window — it otherwise
+      restarts itself and races the renderer.</li>
+</ul>
+
+<h2>Why the station is the source of truth</h2>
+<p>Reading a setting back off the AP only proves it was written down. Wherever the difference is
+observable, a check prefers evidence from the client: what it <em>negotiated</em>, which address
+it <em>got</em>, which access category a marked frame <em>arrived</em> in. That is also why
+throughput is measured against a wired peer the station raises for itself inside a network
+namespace — both ends are the same host, but the namespace has no route to the wireless address,
+so the kernel cannot short-circuit the transfer and the traffic must cross the air.</p>
+
+<h2>Preflight</h2>
+<p>Before any sweep the console checks the station is reachable, its radio is present and can
+scan, RADIUS is running and the AP answers. A failure blocks the run. This exists because three
+long sweeps were lost to conditions that take seconds to detect, and each produced a full run of
+failures that looked like AP defects and were not.</p>
+{% endblock %}

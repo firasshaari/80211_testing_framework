@@ -1,0 +1,102 @@
+{% extends "base.html" %}{% set nav='docs' %}
+{% block body %}
+<h1>Every test, and how it is validated</h1>
+<p>Associating and passing traffic proves the radio and the data path work. It says nothing about
+whether the feature the example exists to exercise is doing anything — a rate limit that never
+reached the data path still lets a client browse.</p>
+<p class="dim">This page is generated from <code>framework/examples/catalog.py</code> and the
+registries in <code>tests/regression/validators.py</code>. Register a check and it appears here;
+remove one and it stops being claimed.</p>
+
+<div class="tiles">
+  <div class="tile"><div class="k">Examples</div><div class="v">{{ summary.examples }}</div></div>
+  <div class="tile"><div class="k">Cases per sweep</div><div class="v">{{ summary.cases }}</div>
+    <div class="s">× 3 bands</div></div>
+  <div class="tile"><div class="k">Beyond connect</div><div class="v pass">{{ summary.with_extra }}</div>
+    <div class="s">examples with a feature check</div></div>
+  <div class="tile"><div class="k">Checks</div><div class="v">{{ summary.checks }}</div>
+    {% if summary.undocumented %}<div class="s warn">{{ summary.undocumented|length }} undocumented</div>{% endif %}</div>
+</div>
+
+<h2>The checks</h2>
+<div class="scroller"><table>
+<thead><tr><th>Check</th><th>Runs</th><th>Applies to</th><th>What it asserts</th></tr></thead><tbody>
+{% for c in checks %}
+<tr>
+  <td class="mono">{{ c.name }}</td>
+  <td><span class="pill {{ 'sig' if c.scope == 'per SSID' }}">{{ c.scope }}</span></td>
+  <td class="dim" style="font-size:12.5px">{{ c.applies|join(', ') }}</td>
+  <td>{{ c.note }}{% if not c.documented %} <span class="pill warn">undocumented</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody></table></div>
+
+<h2>The examples</h2>
+<div class="filters">
+  <input type="search" id="q" placeholder="filter by name, area or check…">
+  <div id="chips"></div>
+</div>
+<p class="dim mono" id="count"></p>
+<div class="scroller"><table>
+<thead><tr><th>Example</th><th>Area</th><th>Forwarding</th><th class="num">SSIDs</th>
+<th>Security</th><th>Validation beyond connect + traffic</th><th>Bench needs</th></tr></thead>
+<tbody id="rows"></tbody>
+</table></div>
+
+<script>
+var ROWS = {{ rows|tojson }};
+var REQ = {station:'station', radius:'RADIUS', vlan:'VLAN trunk', peer_ap:'peer AP',
+  captive_backend:'portal backend', switch_hw:'switch HW', gps_hw:'GPS', wwan_hw:'WWAN',
+  dhcp_server:'ext. DHCP', internet:'internet', sixghz:'6 GHz', wifi7:'Wi-Fi 7'};
+var active = '';
+function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+var AREAS = []; ROWS.forEach(function(r){ if (AREAS.indexOf(r.area_label) < 0) AREAS.push(r.area_label); });
+AREAS.sort();
+
+function draw(){
+  var box = document.getElementById('chips'); box.innerHTML = '';
+  [['', 'all areas']].concat(AREAS.map(function(a){ return [a, a]; })).forEach(function(p){
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip'; b.textContent = p[1];
+    b.setAttribute('aria-pressed', active === p[0]);
+    b.onclick = function(){ active = p[0]; draw(); };
+    box.appendChild(b);
+  });
+  var term = document.getElementById('q').value.trim().toLowerCase();
+  var body = document.getElementById('rows'); body.innerHTML = '';
+  var shown = 0;
+  ROWS.forEach(function(r){
+    if (active && r.area_label !== active) return;
+    if (term) {
+      var hay = (r.name + ' ' + r.area_label + ' ' + r.summary + ' ' + r.extra.join(' ') + ' ' +
+                 r.protos.join(' ')).toLowerCase();
+      if (hay.indexOf(term) < 0) return;
+    }
+    shown++;
+    var beyond = r.extra.length
+      ? r.extra.map(function(c){ return '<span class="pill sig">' + esc(c) + '</span>'; }).join('')
+      : (r.ssids ? '<span class="dim">universals only</span>'
+                 : '<span class="dim">config accepted &amp; rendered</span>');
+    var needs = r.requires.filter(function(x){ return x !== 'station' && x !== 'internet'; })
+      .map(function(x){ return '<span class="pill">' + esc(REQ[x] || x) + '</span>'; }).join('')
+      || '<span class="dim">AP only</span>';
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono">' + esc(r.name) +
+        '<div class="dim" style="font-family:var(--sans);font-size:11.5px;white-space:normal;max-width:32ch;margin-top:3px">' +
+        esc(r.summary) + '</div></td>' +
+      '<td>' + esc(r.area_label) + '</td>' +
+      '<td class="dim">' + esc(r.mode) + '</td>' +
+      '<td class="num">' + (r.ssids || '<span class="dim">—</span>') + '</td>' +
+      '<td>' + (r.protos.length ? r.protos.map(function(p){
+          return '<span class="pill">' + esc(p) + '</span>'; }).join('') : '<span class="dim">—</span>') + '</td>' +
+      '<td>' + beyond + '</td><td>' + needs + '</td>';
+    body.appendChild(tr);
+  });
+  document.getElementById('count').textContent =
+    shown + ' of ' + ROWS.length + ' examples' + (shown === ROWS.length ? '' : ' — filtered');
+}
+document.getElementById('q').addEventListener('input', draw);
+draw();
+</script>
+{% endblock %}

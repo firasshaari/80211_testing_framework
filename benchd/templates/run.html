@@ -1,0 +1,97 @@
+{% extends "base.html" %}{% set nav='runs' %}
+{% block title %}{{ meta.ap_label }} — Bench Console{% endblock %}
+{% block body %}
+<h1>{{ meta.ap_label }}</h1>
+<p class="dim mono">{{ meta.id }} · {{ meta.scope_label }} · {{ meta.mode }} forwarding
+   {% if meta.label %} · {{ meta.label }}{% endif %}</p>
+
+{% if meta.imported and meta.note %}
+  <div class="banner"><strong>Imported run.</strong> {{ meta.note }}</div>
+{% endif %}
+{% if meta.preflight.get('overridden') %}
+  <div class="banner bad"><strong>Preflight failed and was overridden.</strong>
+  The bench was not proven fit when this ran, so treat these numbers as provisional.</div>
+{% endif %}
+{% if meta.is_live %}
+  <div class="banner"><strong>Still running.</strong>
+  <a href="/run/{{ meta.id }}/console">Watch the console</a>.</div>
+{% endif %}
+
+{% set t = s.totals %}
+<div class="tiles">
+  <div class="tile"><div class="k">Cases</div><div class="v">{{ t.total }}</div></div>
+  <div class="tile"><div class="k">Passed</div><div class="v pass">{{ t.passed }}</div></div>
+  <div class="tile"><div class="k">Failed</div><div class="v fail">{{ t.failed + t.broken }}</div>
+       <div class="s">{{ t.broken }} broken</div></div>
+  <div class="tile"><div class="k">Skipped</div><div class="v skip">{{ t.skipped }}</div>
+       <div class="s">bench lacks the hardware</div></div>
+</div>
+{% if t.total %}
+<div class="bar" role="img" aria-label="{{ t.passed }} passed, {{ t.failed + t.broken }} failed, {{ t.skipped }} skipped">
+  <span class="p" style="width:{{ t.passed|pct(t.total) }}%"></span>
+  <span class="f" style="width:{{ (t.failed + t.broken)|pct(t.total) }}%"></span>
+  <span class="s" style="width:{{ t.skipped|pct(t.total) }}%"></span>
+</div>
+{% endif %}
+
+<div class="actions">
+  {% if has_report %}<a class="btn" href="/report/{{ meta.id }}" target="_blank">Open the Allure report</a>
+  {% else %}<form method="post" action="/run/{{ meta.id }}/regenerate"><button class="ghost">Build the Allure report</button></form>{% endif %}
+  <a class="btn ghost" href="/run/{{ meta.id }}/console">Console output</a>
+  <a class="btn ghost" href="/compare?a={{ meta.id }}">Compare with another run</a>
+</div>
+
+<h2>What failed, and why</h2>
+{% if s.by_cause %}
+<p>Grouped by cause rather than by test, so one defect hitting twenty cases is one row.</p>
+<div class="scroller"><table>
+<thead><tr><th>Cause</th><th class="num">Cases</th><th>Examples</th></tr></thead><tbody>
+{% for cause, items in s.by_cause.items() %}
+<tr><td><strong>{{ cause }}</strong></td><td class="num">{{ items|length }}</td>
+    <td class="dim mono" style="font-size:12px">
+      {% for i in items[:6] %}{{ i.example }}-{{ i.band }}{{ ", " if not loop.last }}{% endfor %}
+      {% if items|length > 6 %} +{{ items|length - 6 }} more{% endif %}</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% else %}<p class="dim">Nothing failed or skipped.</p>{% endif %}
+
+{% if s.by_class %}
+<h2>Is it the AP?</h2>
+<p>The framework's own triage of each failure. A transport artefact is the harness losing the
+AP or the station — it is not evidence about the device.</p>
+{% for klass, items in s.by_class.items() %}
+<div class="card {{ 'bad' if klass == 'defect' else '' }}">
+  <h3>{{ s.class_labels.get(klass, klass) }} — {{ items|length }}</h3>
+  <p class="dim">{{ s.class_blurbs.get(klass, '') }}</p>
+  <table><tbody>
+  {% for i in items %}
+    <tr><td class="mono" style="white-space:nowrap">{{ i.example }}-{{ i.band }}</td>
+        <td class="dim">{{ i.message }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+{% endfor %}
+{% endif %}
+
+<h2>Where the results landed</h2>
+<div class="scroller"><table>
+<thead><tr><th>Feature area</th><th class="num">Passed</th><th class="num">Failed</th>
+<th class="num">Broken</th><th class="num">Skipped</th></tr></thead><tbody>
+{% for area, c in s.by_area.items() %}
+<tr><td>{{ area }}</td><td class="num">{{ c.passed }}</td><td class="num">{{ c.failed }}</td>
+    <td class="num">{{ c.broken }}</td><td class="num dim">{{ c.skipped }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+
+<h2>The bench it ran on</h2>
+<dl class="kv">
+  <dt>AP host</dt><dd class="mono">{{ meta.ap.get('host','—') }}</dd>
+  <dt>Model</dt><dd>{{ meta.ap.get('model','—') }}</dd>
+  <dt>Firmware</dt><dd class="mono">{{ meta.ap.get('firmware','—') }}</dd>
+  <dt>Serial</dt><dd class="mono">{{ meta.ap.get('serial','—') }}</dd>
+  <dt>Kernel</dt><dd class="mono">{{ meta.ap.get('kernel','—') }}</dd>
+  {% for k, v in meta.station.items() %}<dt>Station {{ k }}</dt><dd class="mono">{{ v }}</dd>{% endfor %}
+  <dt>Started</dt><dd class="mono">{{ meta.started }}</dd>
+  <dt>Finished</dt><dd class="mono">{{ meta.finished or '—' }}</dd>
+</dl>
+{% endblock %}

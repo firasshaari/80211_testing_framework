@@ -1,0 +1,115 @@
+{% extends "base.html" %}{% set nav='compare' %}
+{% block body %}
+<h1>Compare two runs</h1>
+<p>Cases are matched on the example name and band, which carry no AP identity — so the same
+case lines up across different APs and different firmware.</p>
+
+<form class="filters" method="get" action="/compare">
+  <select name="a">
+    <option value="">first run…</option>
+    {% for m in runs %}<option value="{{ m.id }}" {{ 'selected' if m.id == a }}>
+      {{ m.ap_label }} · {{ m.fw }} · {{ m.started[:10] }}{% if m.label %} · {{ m.label }}{% endif %}
+    </option>{% endfor %}
+  </select>
+  <select name="b">
+    <option value="">second run…</option>
+    {% for m in runs %}<option value="{{ m.id }}" {{ 'selected' if m.id == b }}>
+      {{ m.ap_label }} · {{ m.fw }} · {{ m.started[:10] }}{% if m.label %} · {{ m.label }}{% endif %}
+    </option>{% endfor %}
+  </select>
+  <button type="submit">Compare</button>
+</form>
+
+{% if result %}
+  {% set c = result.counts %}
+  <div class="card {{ 'bad' if c.regressed else 'good' }}">
+    <h3>{{ result.headline }}</h3>
+    <p class="dim">{{ 'Same model, so this reads as a firmware comparison.' if result.kind == 'firmware'
+       else 'Different models, so this is an AP-to-AP comparison.' }}</p>
+  </div>
+
+  {% if c.get('regressed_artefact') %}
+  <div class="banner"><strong>{{ c.regressed_artefact }} of the {{ c.regressed }} regressions are
+  bench artefacts</strong> — the harness losing the AP or the station mid-case. They say nothing
+  about the device and should not be read as a difference between these two runs.</div>
+  {% endif %}
+
+  <div class="tiles">
+    <div class="tile"><div class="k">Regressed</div><div class="v fail">{{ c.regressed }}</div>
+      <div class="s">passed before, failing now</div></div>
+    <div class="tile"><div class="k">Fixed</div><div class="v pass">{{ c.fixed }}</div>
+      <div class="s">failing before, passing now</div></div>
+    <div class="tile"><div class="k">Failing in both</div><div class="v warn">{{ c.both_failed }}</div>
+      <div class="s">the findings that travel</div></div>
+    <div class="tile"><div class="k">Skipped differently</div><div class="v skip">{{ c.skip_diff }}</div>
+      <div class="s">a capability difference, not a regression</div></div>
+    <div class="tile"><div class="k">Unchanged</div><div class="v">{{ c.both_passed }}</div></div>
+  </div>
+
+  <div class="filters">
+    <input type="search" id="q" placeholder="filter by example, area or message…">
+    <div id="chips"></div>
+  </div>
+  <div class="scroller"><table>
+    <thead><tr><th>Case</th><th>Area</th>
+      <th>{{ result.a.ap_label if result.a else 'A' }}</th>
+      <th>{{ result.b.ap_label if result.b else 'B' }}</th>
+      <th>Verdict</th><th>What the second run said</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+  <p class="dim mono" id="count"></p>
+
+<script>
+var ROWS = {{ result.rows|tojson }};
+var INTERESTING = ['regressed','fixed','both_failed','skip_diff'];
+var active = '';
+function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+function cls(s){ return s === 'passed' ? 'pass' : (s === 'skipped' ? 'skip' : 'fail'); }
+
+function chips(){
+  var box = document.getElementById('chips');
+  box.innerHTML = '';
+  [['','changed only']].concat(INTERESTING.map(function(v){ return [v, v.replace('_',' ')]; }))
+    .concat([['all','everything']])
+    .forEach(function(p){
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'chip'; b.textContent = p[1];
+      b.setAttribute('aria-pressed', active === p[0]);
+      b.onclick = function(){ active = p[0]; draw(); };
+      box.appendChild(b);
+    });
+}
+function draw(){
+  chips();
+  var term = document.getElementById('q').value.trim().toLowerCase();
+  var body = document.getElementById('rows'); body.innerHTML = '';
+  var shown = 0;
+  ROWS.forEach(function(r){
+    if (active === '' && INTERESTING.indexOf(r.verdict) < 0) return;
+    if (active && active !== 'all' && r.verdict !== active) return;
+    if (term) {
+      var hay = (r.example + ' ' + r.band + ' ' + r.area + ' ' + r.b_message + ' ' + r.cause).toLowerCase();
+      if (hay.indexOf(term) < 0) return;
+    }
+    shown++;
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono">' + esc(r.example) + '<span class="dim">-' + esc(r.band) + '</span></td>' +
+      '<td class="dim">' + esc(r.area) + '</td>' +
+      '<td><span class="pill ' + cls(r.a) + '">' + esc(r.a) + '</span></td>' +
+      '<td><span class="pill ' + cls(r.b) + '">' + esc(r.b) + '</span></td>' +
+      '<td>' + esc(r.verdict_label) +
+        (r.blame === 'artefact' ? ' <span class="pill">bench artefact</span>' : '') + '</td>' +
+      '<td class="dim" style="font-size:12.5px">' + esc(r.cause ? r.cause + ' — ' : '') +
+        esc(r.b_message) + '</td>';
+    body.appendChild(tr);
+  });
+  document.getElementById('count').textContent = shown + ' of ' + ROWS.length + ' cases shown';
+}
+document.getElementById('q').addEventListener('input', draw);
+draw();
+</script>
+{% elif a or b %}
+  <div class="banner">Pick two runs to compare.</div>
+{% endif %}
+{% endblock %}

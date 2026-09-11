@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% set nav='docs' %}{% block wrapclass %}narrow{% endblock %}
+{% block body %}
+<h1>What is not proven</h1>
+<p>Stating the ceiling is part of the result. Everything below is a known limit of the bench or of
+the method, not an oversight.</p>
+<ul>
+  <li><strong>Telemetry delivery.</strong> The uCentral agent is disabled by design, so the suite
+  can prove the collector runs and the metrics were accepted, but not that anything reached a
+  controller.</li>
+  <li><strong>Anything needing a second station.</strong> Strict forwarding, client isolation,
+  steering and quality-threshold all need two clients. The Pi's onboard radio is deliberately
+  disabled — using it cost a bricked boot. A USB adapter is the route, not the onboard chip.</li>
+  <li><strong>Roaming between APs.</strong> One AP on the bench means 802.11r/k/v are checked as
+  <em>advertised capability</em>, not as a completed roam.</li>
+  <li><strong>6 GHz and Wi-Fi 7.</strong> Permanently skipped until an AP with a 6 GHz radio is on
+  the bench. The BE200 client side is ready.</li>
+  <li><strong>Tunnels and mesh.</strong> They need a peer AP or tunnel endpoint.</li>
+  <li><strong>Rate-limit precision.</strong> The check catches a limit that did not take effect. It
+  deliberately does not police shaper accuracy — the 2.5× ceiling is not a claim about how well the
+  AP shapes.</li>
+  <li><strong>IPv6.</strong> Out of scope; the lab has no IPv6, so those cases were failing for an
+  environmental reason and saying nothing about the AP.</li>
+</ul>
+<div class="card bad">
+  <h3>The rule that has cost the most time</h3>
+  <p><strong>A bench fault reads exactly like an AP defect.</strong> Three separate sweeps were
+  destroyed by the bench rather than the AP — a station that fell over, hundreds of station SSH
+  errors, and a RADIUS container that had exited without restarting. Every one produced a
+  plausible-looking pile of AP failures. That is why preflight blocks a run, and why an overridden
+  preflight is recorded against the run for ever.</p>
+</div>
+{% endblock %}

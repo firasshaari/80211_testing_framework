@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Bench Console{% endblock %}</title>
+<link rel="stylesheet" href="/static/bench.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📡</text></svg>">
+</head>
+<body>
+<header class="top"><div class="topin">
+  <a class="brand" href="/">Bench<span>&nbsp;Console</span></a>
+  <nav class="main">
+    <a href="/"        class="{{ 'on' if nav=='home' }}">Dashboard</a>
+    <a href="/new"     class="{{ 'on' if nav=='new' }}">New run</a>
+    <a href="/runs"    class="{{ 'on' if nav=='runs' }}">Runs</a>
+    <a href="/compare" class="{{ 'on' if nav=='compare' }}">Compare</a>
+    <a href="/docs"    class="{{ 'on' if nav=='docs' }}">How it works</a>
+  </nav>
+  {% if busy and current %}
+    <a class="pill warn" href="/run/{{ current.id }}/console">running: {{ current.ap_label }}</a>
+  {% endif %}
+  <a class="dim" href="/logout" style="font-size:13px;text-decoration:none">Sign out</a>
+</div></header>
+<div class="wrap {% block wrapclass %}{% endblock %}">
+{% block body %}{% endblock %}
+</div>
+</body>
+</html>

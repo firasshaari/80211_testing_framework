@@ -1,0 +1,27 @@
+{% extends "base.html" %}{% set nav='runs' %}
+{% block body %}
+<h1>Runs</h1>
+<p>Every run keeps the AP model, firmware and serial it was actually run against — recorded at
+run time, because a results directory name does not carry it.</p>
+<div class="scroller"><table>
+<thead><tr><th>When</th><th>Status</th><th>AP</th><th>Firmware</th><th>Scope</th>
+<th class="num">Pass</th><th class="num">Fail</th><th class="num">Skip</th><th></th></tr></thead>
+<tbody>
+{% for m in runs %}
+<tr>
+  <td class="mono">{{ m.started[:16].replace('T',' ') }}</td>
+  <td><span class="dot {{ m.status }}"></span>{{ m.status }}
+      {% if m.preflight.get('overridden') %}<span class="pill fail">bench was unfit</span>{% endif %}</td>
+  <td>{{ m.ap_label }}{% if m.label %}<div class="dim" style="font-size:12px">{{ m.label }}</div>{% endif %}</td>
+  <td class="mono">{{ m.fw }}</td>
+  <td class="dim">{{ m.scope_label }}{% if m.imported %} <span class="pill">imported</span>{% endif %}</td>
+  <td class="num">{{ m.totals.get('passed', 0) }}</td>
+  <td class="num">{{ m.totals.get('failed', 0) + m.totals.get('broken', 0) }}</td>
+  <td class="num dim">{{ m.totals.get('skipped', 0) }}</td>
+  <td><a href="/run/{{ m.id }}">open</a></td>
+</tr>
+{% else %}
+<tr><td colspan="9" class="dim">Nothing stored yet.</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% endblock %}

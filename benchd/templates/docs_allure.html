@@ -1,0 +1,59 @@
+{% extends "base.html" %}{% set nav='docs' %}{% block wrapclass %}narrow{% endblock %}
+{% block body %}
+<h1>Reading the Allure report</h1>
+<p>Every run keeps a full Allure report, linked from its summary page. Allure is a static site and
+must be served — the console serves it for you, so the link just works.</p>
+
+<h2>Where to look, in order</h2>
+<ol>
+  <li><strong>Categories</strong> — always first. It buckets failures by <em>cause</em>, not by
+  test, so one defect hitting twenty cases collapses into one row. The run summary page in this
+  console shows the same grouping without needing Allure at all.</li>
+  <li><strong>Overview</strong> — the totals, plus the trend across runs.</li>
+  <li><strong>Behaviors</strong> — <code>epic → feature → story</code>, which here is
+  <em>OpenWiFi regression → feature area → example group</em>. The view for "how is security
+  doing", rather than "which test failed".</li>
+  <li><strong>Suites</strong> — the raw pytest hierarchy, for when you already know the example
+  name.</li>
+  <li><strong>Graphs</strong> — the duration histogram is the practical one: a case that normally
+  takes 40 s and took 200 s was retrying something.</li>
+  <li><strong>Timeline</strong> — wall-clock order. This is where bench faults show themselves, as
+  a cliff where every later case starts failing at the same stage.</li>
+</ol>
+
+<h2>Anatomy of a case</h2>
+<table><tbody>
+<tr><td class="mono">Title "… · 2G"</td><td>The example's summary plus the band this cell pinned.
+    The same example appears once per band.</td></tr>
+<tr><td class="mono">Description</td><td>Example name, area, group, forwarding mode and the
+    physical requirements it declares. If it skipped, the unmet requirement is named here.</td></tr>
+<tr><td class="mono">"N SSID(s) come up"</td><td>Carries two attachments. <strong>"visible in a
+    station scan"</strong> is the honest one — it lists each SSID with <code>yes</code> or
+    <code>NO</code> from the station's own scan, which is the only way to tell "the AP says the BSS
+    is up" apart from "a beacon actually reached the air".</td></tr>
+<tr><td class="mono">"Client joins and passes traffic"</td><td>One nested step per SSID, labelled
+    <code>name (proto)</code>. The per-SSID checks appear as further steps inside it.</td></tr>
+<tr><td class="mono">"… behaves as configured"</td><td>The AP-side checks. Present only if at least
+    one SSID joined — there is no point asking whether a feature works when nothing reached it.</td></tr>
+<tr><td class="mono">"scope of this check"</td><td>An honesty note, attached when a check
+    deliberately proves less than its name suggests. Telemetry <em>collection</em> is verified;
+    delivery to the controller is not observable with the agent disabled.</td></tr>
+</tbody></table>
+
+<h2>Reading the failure message</h2>
+<pre class="block">Failed: 5 of 6 SSID(s) worked end to end; 1 did not
+  ap-psk (psk): Did not associate to 'ap-psk'
+                within 45s (last wpa_state=SCANNING)</pre>
+<p>Three things to read off it. <strong>The ratio</strong> — <code>5 of 6</code> means the radio,
+band plan and data path are fine and one SSID is the problem, which is a very different bug from
+<code>0 of 6</code>. <strong>The proto in brackets</strong> names which security mode broke.
+<strong>The terminal <code>wpa_state</code></strong>: <code>SCANNING</code> means the client never
+found something it could negotiate with; <code>4WAY_HANDSHAKE</code> means it found it and the key
+exchange failed; <code>ASSOCIATED</code> that stalls means 802.1X never completed.</p>
+
+<h2>What "skipped" means here</h2>
+<p>Skips are not gaps in the suite — they are the capability layer refusing to report a
+meaningless result. A case skips when the bench physically lacks what the example needs: a 6 GHz
+radio, a Wi-Fi 7 client, a second AP, a managed switch, a GPS or WWAN module, an external DHCP or
+captive backend. <strong>A skip is a statement about the bench, never about the AP.</strong></p>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}{% block title %}Bench not fit — Bench Console{% endblock %}
+{% block body %}
+<h1>The bench is not fit to test</h1>
+<div class="banner bad"><strong>Preflight failed, so the run has not started.</strong>
+A result from a broken bench looks exactly like an AP defect. Three long sweeps on this
+bench were lost that way before this check existed.</div>
+
+<div class="scroller"><table><tbody>
+{% for line in pre.lines %}
+  <tr><td class="mono">{{ line }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+
+<h3>Usual causes</h3>
+<ul>
+  <li><strong>Station unreachable</strong> — the Pi is also this web server, so if you can read
+      this, check the radio rather than the box.</li>
+  <li><strong>Station cannot scan</strong> — NetworkManager reclaimed the radio after a reboot.</li>
+  <li><strong>RADIUS not running</strong> — <code>podman ps</code> on the station; every
+      enterprise case will fail without it.</li>
+  <li><strong>AP unreachable</strong> — wrong address, or the AP is still booting.</li>
+</ul>
+
+<form method="post" action="/start">
+  {% for k, v in form.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+  <input type="hidden" name="override_preflight" value="1">
+  <div class="actions">
+    <a class="btn ghost" href="/new">Fix it and try again</a>
+    <button class="danger" type="submit">Run anyway, and record that the bench was unfit</button>
+  </div>
+</form>
+<p class="dim">An overridden run is marked as such for ever, so nobody later quotes its
+numbers without knowing.</p>
+{% endblock %}
