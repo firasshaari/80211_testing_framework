@@ -68,8 +68,13 @@ def main() -> int:
                 f"{scan or '0'} BSS visible")
 
     if cfg.external.radius:
+        # Deliberately *not* sudo. infra/up.sh runs the container rootless as
+        # the station user, so its store is /run/user/1000/containers; asking
+        # root's podman returns an empty list and the check fails even while
+        # RADIUS is up and answering Access-Accepts. A gate that cries wolf is
+        # worse than no gate, because the habit it teaches is to override it.
         running = station.run(
-            "podman ps --format '{{.Names}}' | grep -c '^radius$'", sudo=True
+            "podman ps --format '{{.Names}}' | grep -c '^radius$'"
         ).stdout.strip()
         ok &= check("lab RADIUS running", running not in ("", "0"),
                     "start it with infra/up.sh" if running in ("", "0") else "")

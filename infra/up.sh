@@ -36,7 +36,14 @@ fi
 # every enterprise case then failed with the client associating and finding no
 # authentication server — which reads as an AP fault. The bench must come back
 # by itself.
-podman run -d --name radius --network host --restart unless-stopped \
+#
+# It must be `always`, not `unless-stopped`. podman-restart.service — the thing
+# that actually starts containers after a reboot — runs
+# `podman start --all --filter restart-policy=always`, so an `unless-stopped`
+# container is skipped at boot and stays down. That was measured on this bench:
+# after a reboot the container sat in `Exited (0)` with podman-restart enabled
+# and active.
+podman run -d --name radius --network host --restart always \
   -v "$INFRA/freeradius/clients.conf":/etc/freeradius/3.0/clients.conf:ro,z \
   -v "$INFRA/freeradius/authorize":/etc/freeradius/3.0/mods-config/files/authorize:ro,z \
   -v "$INFRA/freeradius/eap":/etc/freeradius/3.0/mods-enabled/eap:ro,z \
