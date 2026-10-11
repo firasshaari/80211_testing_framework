@@ -36,7 +36,14 @@ reports/
 .DS_Store
 
 # Secrets / credentials — never commit these
-config/testbed.yaml
+# Any bench config holds AP and station passwords. Ignore the whole directory
+# rather than one filename: the README tells people to keep a file per AP
+# (config/ap-lab2.yaml), and an exact-name rule would have tracked it. The
+# leading-dot form catches editor and Finder temp copies, which a plain glob
+# does not match.
+config/*.yaml
+config/.*
+!config/profiles/
 config/profiles/*.yaml
 !config/profiles/example_*.yaml
 
