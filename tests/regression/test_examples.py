@@ -15,6 +15,8 @@ rather than by anything here.
 from __future__ import annotations
 
 import allure
+import os
+
 import pytest
 
 from framework.clients.rpi5_station import StationError
@@ -34,9 +36,13 @@ _AREA_LABELS = {
     "wifi_gen": "6 GHz and Wi-Fi 7", "wwan": "Cellular uplink",
 }
 
-# Bridge only, by request. NAT is implemented (force_forwarding_mode) and can be
-# reinstated by extending this.
-MODE = "bridge"
+# Bridge by default, by request. NAT is implemented (force_forwarding_mode) and
+# selectable per run via BENCH_FORWARDING, because the Bench Console offers a
+# forwarding dropdown and a control that silently does nothing is worse than no
+# control: a run would be *labelled* nat while actually testing bridge.
+MODE = os.environ.get("BENCH_FORWARDING", "bridge").strip().lower()
+if MODE not in ("bridge", "nat"):
+    MODE = "bridge"
 
 
 def _cases():

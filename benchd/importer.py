@@ -48,8 +48,12 @@ def import_results(src: Path, *, label: str = "", note: str = "",
                  for k, v in env.items() if k.startswith("Station.")},
     )
     meta.totals = store.totals(run_id)
-    status_of = meta.totals
-    meta.status = "failed" if (status_of.get("failed") or status_of.get("broken")) else "passed"
+    # Same rule as a live run, so an imported sweep where everything skipped is
+    # not labelled "passed" either.
+    meta.status = runner.status_from(
+        meta.totals,
+        exit_code=1 if (meta.totals.get("failed") or meta.totals.get("broken")) else 0,
+    )
     store.write_meta(meta)
 
     if generate:

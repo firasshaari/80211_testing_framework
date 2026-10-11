@@ -11,6 +11,7 @@ second concurrent run would not be slow, it would be wrong.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import signal
 import subprocess
@@ -30,6 +31,27 @@ _procs: dict[str, subprocess.Popen] = {}
 # time that is harmless as long as it is truncated on the way in and copied out
 # on the way finished.
 _PROGRESS = paths.REPO / "reports" / "progress.log"
+
+
+def status_from(totals: dict, *, exit_code: int | None = None) -> str:
+    """
+    What a finished run should be called.
+
+    pytest exits 0 when every case *skipped*, so a run against a bench that
+    could not test anything came back labelled "passed" with zero passes.
+    Calling that a pass is the same dishonesty as reporting a bench fault as an
+    AP defect, so it gets its own status. Shared with the importer so there is
+    one rule rather than two.
+    """
+    passed = totals.get("passed", 0)
+    total = totals.get("total", 0)
+    if exit_code not in (None, 0):
+        return "failed" if total else "error"
+    if passed:
+        return "passed"
+    if total:
+        return "skipped"
+    return "error"              # nothing came out — the run never really started
 
 
 def current_id() -> str | None:
@@ -121,8 +143,11 @@ def start(*, cfg: dict, ap_info: dict, label: str = "", scope_kind: str = "full"
             pass
 
         log = open(store.console_log(meta.id), "wb", buffering=0)
+        # The suite reads the forwarding mode from the environment; without this
+        # the console's dropdown would record a mode it never applied.
+        env = {**os.environ, "BENCH_FORWARDING": meta.mode}
         proc = subprocess.Popen(
-            _pytest_argv(meta, cfg_path), cwd=paths.REPO,
+            _pytest_argv(meta, cfg_path), cwd=paths.REPO, env=env,
             stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True,     # so stopping the run kills the whole
                                         # process group, not just pytest
@@ -159,16 +184,8 @@ def _watch(run_id: str, proc: subprocess.Popen, log) -> None:
         meta.station = {k.removeprefix("Station."): v
                         for k, v in env.items() if k.startswith("Station.")}
 
-    if meta.status == "stopping":
-        meta.status = "stopped"
-    elif code == 0:
-        meta.status = "passed"
-    elif meta.totals.get("total"):
-        meta.status = "failed"          # pytest exits non-zero on failures; a
-                                        # run that produced results did run
-    else:
-        meta.status = "error"           # nothing came out — the run never
-                                        # really started
+    meta.status = ("stopped" if meta.status == "stopping"
+                   else status_from(meta.totals, exit_code=code))
 
     try:
         if _PROGRESS.exists():

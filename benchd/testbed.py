@@ -62,16 +62,20 @@ def write(cfg: dict, dest: Path) -> Path:
 def redacted(cfg: dict) -> dict:
     """A copy safe to show in a browser or keep alongside the results."""
     out = copy.deepcopy(cfg)
+    # ``or {}`` rather than a ``.get`` default: a key that is *present* with a
+    # null value (``radius: null`` is how a profile says "no RADIUS") must read
+    # as absent, not as something to call ``.get`` on.
     for section in ("ap", "station"):
         for key in ("password", "root_password"):
-            if out.get(section, {}).get(key):
+            if (out.get(section) or {}).get(key):
                 out[section][key] = _REDACT
     ext = out.get("external") or {}
-    if ext.get("radius", {}).get("secret"):
-        ext["radius"]["secret"] = _REDACT
-    if ext.get("radius", {}).get("password"):
-        ext["radius"]["password"] = _REDACT
+    radius = ext.get("radius") or {}
+    if radius.get("secret"):
+        radius["secret"] = _REDACT
+    if radius.get("password"):
+        radius["password"] = _REDACT
     for user in ext.get("local_radius_users") or []:
-        if user.get("password"):
+        if user and user.get("password"):
             user["password"] = _REDACT
     return out

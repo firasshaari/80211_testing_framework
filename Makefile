@@ -8,7 +8,7 @@ UPSTREAM_BRANCH ?= main
 UPSTREAM_PATH   := feeds/ucentral/ucentral-schema/files/etc/ucentral/examples
 EXAMPLES_DIR    := configs/examples/upstream
 
-.PHONY: help venv install setup check plan test regression sweep report serve watch infra-up infra-down sync-examples clean
+.PHONY: help venv install setup check plan regression sweep report serve watch infra-up infra-down sync-examples clean
 
 help:
 	@echo "make install         Create .venv and install the framework"
@@ -18,7 +18,7 @@ help:
 	@echo "make regression      Full sweep against CONFIG=$(CONFIG)"
 	@echo "make sweep AREA=x    Only one feature area (security, network_mode, ...)"
 	@echo "make watch           Follow a running sweep live (tail progress.log)"
-	@echo "make infra-up        Start RADIUS + iperf3 containers on the station host"
+	@echo "make infra-up        Start RADIUS (and generate the bench PKI) on the station host"
 	@echo "make infra-down      Stop them"
 	@echo "make report          Build and open the Allure report"
 	@echo "make sync-examples   Re-vendor examples from $(UPSTREAM_REPO)@$(UPSTREAM_BRANCH)"
@@ -91,9 +91,9 @@ clean:
 watch:
 	@touch reports/progress.log && tail -f reports/progress.log
 
-# Self-contained lab services (RADIUS, iperf3) on the station host. See
-# infra/README.md — they run on their own macvlan address so station traffic
-# has to cross the air to reach them.
+# Self-contained lab services on the station host: FreeRADIUS plus the bench
+# PKI. Host networking, deliberately — the AP is the client, not the station.
+# See infra/README.md.
 STA_HOST ?= $(shell $(PY) -c "from framework.config import load_testbed_config as l; print(l('$(CONFIG)').station.host)" 2>/dev/null)
 STA_USER ?= $(shell $(PY) -c "from framework.config import load_testbed_config as l; print(l('$(CONFIG)').station.user)" 2>/dev/null)
 

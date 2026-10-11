@@ -43,7 +43,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["framework*"]
+include = ["framework*", "benchd*"]
+
+[tool.setuptools.package-data]
+benchd = ["templates/*.html", "static/*", "deploy/*"]
 
 [tool.black]
 line-length = 100

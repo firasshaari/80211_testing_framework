@@ -3,7 +3,7 @@ Deploy the self-contained lab services to the station host.
 
 Copies ``infra/`` to the station and runs the container scripts there, so a
 checkout of this repo reproduces the same testbed on identical hardware. See
-``infra/README.md`` for what runs and why it uses macvlan.
+``infra/README.md`` for what runs and why.
 """
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ from framework.clients.ssh import SSHSession
 from framework.config import load_testbed_config
 
 REMOTE = "/opt/regression-infra"
+# Everything ``up.sh`` reaches for. The EAP config and the PKI script were
+# missing, so `make infra-up` against a *clean* station failed: up.sh mounts
+# freeradius/eap into the container and runs pki/make-pki.sh when no server
+# certificate exists yet. It only ever worked because both already happened to
+# be on this bench's Pi.
 FILES = [
     "infra.env",
     "up.sh",
@@ -22,6 +27,8 @@ FILES = [
     "freeradius/Containerfile",
     "freeradius/clients.conf.tmpl",
     "freeradius/authorize",
+    "freeradius/eap",
+    "pki/make-pki.sh",
 ]
 
 
